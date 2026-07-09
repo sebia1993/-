@@ -187,6 +187,9 @@ def test_network_check_tab_and_size_options(app_client):
     assert response.status_code == 200
     assert "네트워크 체크" in body
     assert "1024MB" in body
+    assert "평균 속도" in body
+    assert "구간 속도" in body
+    assert "측정 취소" in body
     assert "/network-check/upload" in body
     assert "/network-check/download" in body
 
@@ -313,6 +316,18 @@ def test_network_check_js_avoids_request_stream_uploads():
 
     assert "ReadableStream" not in script
     assert "duplex" not in script
+
+
+def test_network_check_js_has_speed_and_cancel_guards():
+    script = Path("static/network_check.js").read_text(encoding="utf-8")
+
+    assert "AbortController" in script
+    assert "confirm" in script
+    assert "1024MB" in script
+    assert "MB/s" in script
+    assert "data-average-speed" in script
+    assert "data-interval-speed" in script
+    assert "data-cancel-check" in script
 
 
 def test_csv_header_is_utf8_sig(app_client):

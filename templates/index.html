@@ -181,6 +181,7 @@
             <button type="button" class="secondary" data-check-action="upload">업로드 측정</button>
             <button type="button" class="secondary" data-check-action="download">다운로드 측정</button>
             <button type="button" class="primary" data-check-action="full">전체 측정</button>
+            <button type="button" class="secondary" data-cancel-check disabled hidden>측정 취소</button>
           </div>
 
           <div class="notice warning compact-notice">
@@ -204,8 +205,12 @@
               <dd data-progress-text>0%</dd>
             </div>
             <div>
-              <dt>현재 속도</dt>
-              <dd data-current-speed>-</dd>
+              <dt>평균 속도</dt>
+              <dd data-average-speed>-</dd>
+            </div>
+            <div>
+              <dt>구간 속도</dt>
+              <dd data-interval-speed>-</dd>
             </div>
             <div>
               <dt>완료 결과</dt>
