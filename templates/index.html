@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>사내 업로드</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>사내 업로드</h1>
+        <p>접속 IP {{ client_ip }} · 저장 기준 {{ config.storage_root }}</p>
+      </div>
+      <div class="statusline">
+        {% if can_delete %}
+          <span class="badge badge-ok">삭제 가능</span>
+        {% else %}
+          <span class="badge">삭제 제한</span>
+        {% endif %}
+        <span class="badge">포트 {{ config.port }}</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel upload-panel">
+        <h2>파일 업로드</h2>
+        <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
+          <label>
+            <span>파일</span>
+            <input type="file" name="file" required>
+          </label>
+
+          <label>
+            <span>저장 하위 폴더</span>
+            <input
+              type="text"
+              name="storage_subdir"
+              value="{{ storage_subdir }}"
+              placeholder="비우면 기본 저장폴더에 저장">
+          </label>
+
+          <label>
+            <span>메모</span>
+            <textarea name="memo" rows="4" placeholder="선택 입력">{{ memo }}</textarea>
+          </label>
+
+          <label class="checkbox-line">
+            <input type="checkbox" name="confirm_duplicate" value="1">
+            <span>같은 이름이 있으면 ID를 붙여 저장</span>
+          </label>
+
+          <button type="submit" class="primary">업로드</button>
+        </form>
+      </section>
+
+      <section class="panel result-panel">
+        <h2>처리 결과</h2>
+
+        {% if deleted %}
+          <div class="notice success">파일과 CSV 기록을 삭제했습니다.</div>
+        {% endif %}
+
+        {% if error %}
+          <div class="notice error">{{ error }}</div>
+        {% endif %}
+
+        {% if conflict %}
+          <div class="notice warning">
+            <strong>같은 이름의 파일이 이미 존재합니다.</strong>
+            <p>{{ conflict.storage_subdir }} 위치에 {{ conflict.filename }} 파일이 있습니다.</p>
+            <p>그래도 업로드하려면 파일을 다시 선택하고 “같은 이름이 있으면 ID를 붙여 저장”을 체크하세요.</p>
+          </div>
+        {% endif %}
+
+        {% if result %}
+          <div class="notice success">
+            <strong>업로드 완료</strong>
+            <p>{{ result.original_filename }} → {{ result.stored_filename }}</p>
+          </div>
+
+          <label class="link-box">
+            <span>다운로드 링크</span>
+            <input type="text" readonly value="{{ result.download_url }}" onclick="this.select()">
+          </label>
+
+          <div class="actions">
+            <a href="{{ result.download_url }}" class="secondary">다운로드 확인</a>
+          </div>
+
+          {% if result.loopback_warning %}
+            <div class="notice warning">
+              localhost 또는 127.0.0.1 링크는 다른 PC에서 사용할 수 없습니다. config.ini의 BASE_URL 또는 서버 PC 사내 IP를 확인하세요.
+            </div>
+          {% endif %}
+        {% else %}
+          <p class="empty">업로드 후 이 영역에 다운로드 링크가 표시됩니다.</p>
+        {% endif %}
+      </section>
+    </main>
+
+    <section class="panel list-panel">
+      <div class="section-title">
+        <h2>최근 업로드</h2>
+        <span>최근 {{ config.recent_limit }}개</span>
+      </div>
+
+      {% if records %}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>일시</th>
+                <th>파일</th>
+                <th>저장 폴더</th>
+                <th>메모</th>
+                <th>링크</th>
+                {% if can_delete %}
+                  <th>삭제</th>
+                {% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for record in records %}
+                <tr>
+                  <td class="nowrap">{{ record.uploaded_at }}</td>
+                  <td>
+                    <div class="file-name">{{ record.original_filename }}</div>
+                    <div class="muted">{{ record.stored_filename }}</div>
+                  </td>
+                  <td>{{ record.storage_subdir or "기본 저장폴더" }}</td>
+                  <td class="memo">{{ record.memo }}</td>
+                  <td><a href="{{ record.download_url }}">열기</a></td>
+                  {% if can_delete %}
+                    <td>
+                      <form
+                        action="{{ url_for('delete', upload_id=record.upload_id) }}"
+                        method="post"
+                        onsubmit="return confirm('파일과 CSV 기록을 삭제할까요?');">
+                        <button type="submit" class="danger">삭제</button>
+                      </form>
+                    </td>
+                  {% endif %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="empty">아직 업로드 기록이 없습니다.</p>
+      {% endif %}
+    </section>
+  </body>
+</html>

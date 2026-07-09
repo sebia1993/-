@@ -1,0 +1,291 @@
+:root {
+  --bg: #f4f5f2;
+  --panel: #ffffff;
+  --line: #d8ddd3;
+  --text: #20231f;
+  --muted: #626b5f;
+  --primary: #246b54;
+  --primary-hover: #1d5845;
+  --danger: #b42318;
+  --warning-bg: #fff3cd;
+  --warning-line: #e7c86f;
+  --success-bg: #e8f5ed;
+  --success-line: #97c9aa;
+  --error-bg: #fdeceb;
+  --error-line: #ef9a95;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Malgun Gothic", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 28px;
+  background: #29332d;
+  color: #ffffff;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.topbar p {
+  margin: 4px 0 0;
+  color: #dfe6db;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.statusline {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid #64705f;
+  border-radius: 6px;
+  color: #edf3ea;
+  font-size: 13px;
+}
+
+.badge-ok {
+  border-color: #8fc49f;
+  color: #e9fff0;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 16px;
+  width: min(1200px, calc(100% - 32px));
+  margin: 20px auto 0;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.panel h2 {
+  margin: 0 0 14px;
+  font-size: 18px;
+}
+
+form {
+  margin: 0;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  font-weight: 600;
+}
+
+label span {
+  font-size: 14px;
+}
+
+input[type="file"],
+input[type="text"],
+textarea {
+  width: 100%;
+  border: 1px solid #bfc7b8;
+  border-radius: 6px;
+  padding: 10px 11px;
+  color: var(--text);
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.checkbox-line input {
+  width: 18px;
+  height: 18px;
+}
+
+button,
+.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  padding: 7px 12px;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.primary {
+  width: 100%;
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.primary:hover {
+  background: var(--primary-hover);
+}
+
+.secondary {
+  background: #ffffff;
+  border-color: #aeb8a7;
+  color: #26352d;
+}
+
+.danger {
+  min-height: 32px;
+  background: #ffffff;
+  border-color: #e0aaa6;
+  color: var(--danger);
+}
+
+.notice {
+  border: 1px solid;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.notice p {
+  margin: 6px 0 0;
+}
+
+.success {
+  border-color: var(--success-line);
+  background: var(--success-bg);
+}
+
+.warning {
+  border-color: var(--warning-line);
+  background: var(--warning-bg);
+}
+
+.error {
+  border-color: var(--error-line);
+  background: var(--error-bg);
+}
+
+.link-box {
+  margin-top: 12px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.list-panel {
+  width: min(1200px, calc(100% - 32px));
+  margin: 16px auto 32px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-title h2 {
+  margin: 0;
+}
+
+.section-title span,
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 820px;
+}
+
+th,
+td {
+  border-top: 1px solid var(--line);
+  padding: 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: #f8f9f6;
+  font-size: 13px;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.file-name {
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.memo {
+  max-width: 280px;
+  word-break: break-word;
+}
+
+@media (max-width: 800px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .statusline {
+    justify-content: flex-start;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
