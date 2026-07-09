@@ -47,7 +47,7 @@ jobs:
       - name: Build Windows release ZIP
         shell: pwsh
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_windows_release.ps1 -Version $env:RELEASE_VERSION
+          .\tools\build_windows_release.ps1 -Version $env:RELEASE_VERSION
 
       - name: Upload ZIP to GitHub Release
         shell: pwsh

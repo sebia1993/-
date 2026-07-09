@@ -85,7 +85,7 @@ Windows Release ZIP 검증은 GitHub Actions `windows-latest`에서 실행합니
 ```powershell
 python -m compileall app.py tests tools
 python -m pytest -q
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_windows_release.ps1 -Version v0.1.0
+pwsh -NoProfile -File .\tools\build_windows_release.ps1 -Version v0.1.0
 InternalUpload.exe --smoke-check
 python tools\verify_release_zip.py --zip dist\internal-upload_v0.1.0_windows.zip --version v0.1.0
 ```
