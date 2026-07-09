@@ -17,6 +17,8 @@ $PyInstallerWork = Join-Path $BuildRoot "pyinstaller-work"
 $ZipPath = Join-Path $DistRoot "$PackageName.zip"
 $ShaPath = "$ZipPath.sha256"
 $ReleaseNotesPath = Join-Path $DistRoot "release_notes_$Version.md"
+$TemplatesPath = Join-Path $Root "templates"
+$StaticPath = Join-Path $Root "static"
 
 if (Test-Path $PackageRoot) { Remove-Item $PackageRoot -Recurse -Force }
 if (Test-Path $PyInstallerDist) { Remove-Item $PyInstallerDist -Recurse -Force }
@@ -37,8 +39,8 @@ try {
         --distpath $PyInstallerDist `
         --workpath $PyInstallerWork `
         --specpath $BuildRoot `
-        --add-data "templates;templates" `
-        --add-data "static;static" `
+        --add-data "${TemplatesPath};templates" `
+        --add-data "${StaticPath};static" `
         app.py
 
     $ExePath = Join-Path $PyInstallerDist "InternalUpload.exe"
