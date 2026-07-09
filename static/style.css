@@ -111,6 +111,7 @@ label span {
 
 input[type="file"],
 input[type="text"],
+select,
 textarea {
   width: 100%;
   border: 1px solid #bfc7b8;
@@ -151,6 +152,12 @@ button,
   cursor: pointer;
 }
 
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .primary {
   width: 100%;
   background: var(--primary);
@@ -159,6 +166,10 @@ button,
 
 .primary:hover {
   background: var(--primary-hover);
+}
+
+.primary:disabled:hover {
+  background: var(--primary);
 }
 
 .secondary {
@@ -200,6 +211,10 @@ button,
   background: var(--error-bg);
 }
 
+.compact-notice {
+  margin: 14px 0 0;
+}
+
 .link-box {
   margin-top: 12px;
 }
@@ -218,6 +233,104 @@ button,
 .list-panel {
   width: min(1200px, calc(100% - 32px));
   margin: 16px auto 32px;
+}
+
+.mode-tabs {
+  display: flex;
+  gap: 8px;
+  width: min(1200px, calc(100% - 32px));
+  margin: 16px auto 0;
+}
+
+.tab-button {
+  background: #ffffff;
+  border-color: #aeb8a7;
+  color: #26352d;
+}
+
+.tab-button.is-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+.network-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 16px;
+  width: min(1200px, calc(100% - 32px));
+  margin: 20px auto 32px;
+}
+
+.network-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.network-actions .primary,
+.network-actions .secondary {
+  width: 100%;
+}
+
+.progress-track {
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  background: #e4e8df;
+  border: 1px solid #c7d0c0;
+  border-radius: 999px;
+}
+
+.progress-bar {
+  width: 0%;
+  height: 100%;
+  background: var(--primary);
+  transition: width 120ms linear;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 0;
+}
+
+.metric-grid div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8f9f6;
+}
+
+.metric-grid dt {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.metric-grid dd {
+  margin: 0;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.result-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.result-item {
+  border: 1px solid var(--success-line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--success-bg);
+  font-weight: 700;
 }
 
 .section-title {
@@ -286,6 +399,13 @@ th {
   }
 
   .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-tabs,
+  .network-actions,
+  .network-layout,
+  .metric-grid {
     grid-template-columns: 1fr;
   }
 }

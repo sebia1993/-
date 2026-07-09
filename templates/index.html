@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>사내 업로드</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script defer src="{{ url_for('static', filename='network_check.js') }}"></script>
   </head>
   <body>
     <header class="topbar">
@@ -22,133 +23,199 @@
       </div>
     </header>
 
-    <main class="layout">
-      <section class="panel upload-panel">
-        <h2>파일 업로드</h2>
-        <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
-          <label>
-            <span>파일</span>
-            <input type="file" name="file" required>
-          </label>
+    <nav class="mode-tabs" aria-label="작업 모드">
+      <button type="button" class="tab-button is-active" data-tab-button="upload-mode">파일 업로드</button>
+      <button type="button" class="tab-button" data-tab-button="network-mode">네트워크 체크</button>
+    </nav>
 
-          <label>
-            <span>저장 하위 폴더</span>
-            <input
-              type="text"
-              name="storage_subdir"
-              value="{{ storage_subdir }}"
-              placeholder="비우면 기본 저장폴더에 저장">
-          </label>
+    <section id="upload-mode" class="tab-panel is-active" data-tab-panel>
+      <main class="layout">
+        <section class="panel upload-panel">
+          <h2>파일 업로드</h2>
+          <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
+            <label>
+              <span>파일</span>
+              <input type="file" name="file" required>
+            </label>
 
-          <label>
-            <span>메모</span>
-            <textarea name="memo" rows="4" placeholder="선택 입력">{{ memo }}</textarea>
-          </label>
+            <label>
+              <span>저장 하위 폴더</span>
+              <input
+                type="text"
+                name="storage_subdir"
+                value="{{ storage_subdir }}"
+                placeholder="비우면 기본 저장폴더에 저장">
+            </label>
 
-          <label class="checkbox-line">
-            <input type="checkbox" name="confirm_duplicate" value="1">
-            <span>같은 이름이 있으면 ID를 붙여 저장</span>
-          </label>
+            <label>
+              <span>메모</span>
+              <textarea name="memo" rows="4" placeholder="선택 입력">{{ memo }}</textarea>
+            </label>
 
-          <button type="submit" class="primary">업로드</button>
-        </form>
-      </section>
+            <label class="checkbox-line">
+              <input type="checkbox" name="confirm_duplicate" value="1">
+              <span>같은 이름이 있으면 ID를 붙여 저장</span>
+            </label>
 
-      <section class="panel result-panel">
-        <h2>처리 결과</h2>
+            <button type="submit" class="primary">업로드</button>
+          </form>
+        </section>
 
-        {% if deleted %}
-          <div class="notice success">파일과 CSV 기록을 삭제했습니다.</div>
-        {% endif %}
+        <section class="panel result-panel">
+          <h2>처리 결과</h2>
 
-        {% if error %}
-          <div class="notice error">{{ error }}</div>
-        {% endif %}
+          {% if deleted %}
+            <div class="notice success">파일과 CSV 기록을 삭제했습니다.</div>
+          {% endif %}
 
-        {% if conflict %}
-          <div class="notice warning">
-            <strong>같은 이름의 파일이 이미 존재합니다.</strong>
-            <p>{{ conflict.storage_subdir }} 위치에 {{ conflict.filename }} 파일이 있습니다.</p>
-            <p>그래도 업로드하려면 파일을 다시 선택하고 “같은 이름이 있으면 ID를 붙여 저장”을 체크하세요.</p>
-          </div>
-        {% endif %}
+          {% if error %}
+            <div class="notice error">{{ error }}</div>
+          {% endif %}
 
-        {% if result %}
-          <div class="notice success">
-            <strong>업로드 완료</strong>
-            <p>{{ result.original_filename }} → {{ result.stored_filename }}</p>
-          </div>
-
-          <label class="link-box">
-            <span>다운로드 링크</span>
-            <input type="text" readonly value="{{ result.download_url }}" onclick="this.select()">
-          </label>
-
-          <div class="actions">
-            <a href="{{ result.download_url }}" class="secondary">다운로드 확인</a>
-          </div>
-
-          {% if result.loopback_warning %}
+          {% if conflict %}
             <div class="notice warning">
-              localhost 또는 127.0.0.1 링크는 다른 PC에서 사용할 수 없습니다. config.ini의 BASE_URL 또는 서버 PC 사내 IP를 확인하세요.
+              <strong>같은 이름의 파일이 이미 존재합니다.</strong>
+              <p>{{ conflict.storage_subdir }} 위치에 {{ conflict.filename }} 파일이 있습니다.</p>
+              <p>그래도 업로드하려면 파일을 다시 선택하고 “같은 이름이 있으면 ID를 붙여 저장”을 체크하세요.</p>
             </div>
           {% endif %}
-        {% else %}
-          <p class="empty">업로드 후 이 영역에 다운로드 링크가 표시됩니다.</p>
-        {% endif %}
-      </section>
-    </main>
 
-    <section class="panel list-panel">
-      <div class="section-title">
-        <h2>최근 업로드</h2>
-        <span>최근 {{ config.recent_limit }}개</span>
-      </div>
+          {% if result %}
+            <div class="notice success">
+              <strong>업로드 완료</strong>
+              <p>{{ result.original_filename }} → {{ result.stored_filename }}</p>
+            </div>
 
-      {% if records %}
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>일시</th>
-                <th>파일</th>
-                <th>저장 폴더</th>
-                <th>메모</th>
-                <th>링크</th>
-                {% if can_delete %}
-                  <th>삭제</th>
-                {% endif %}
-              </tr>
-            </thead>
-            <tbody>
-              {% for record in records %}
+            <label class="link-box">
+              <span>다운로드 링크</span>
+              <input type="text" readonly value="{{ result.download_url }}" onclick="this.select()">
+            </label>
+
+            <div class="actions">
+              <a href="{{ result.download_url }}" class="secondary">다운로드 확인</a>
+            </div>
+
+            {% if result.loopback_warning %}
+              <div class="notice warning">
+                localhost 또는 127.0.0.1 링크는 다른 PC에서 사용할 수 없습니다. config.ini의 BASE_URL 또는 서버 PC 사내 IP를 확인하세요.
+              </div>
+            {% endif %}
+          {% else %}
+            <p class="empty">업로드 후 이 영역에 다운로드 링크가 표시됩니다.</p>
+          {% endif %}
+        </section>
+      </main>
+
+      <section class="panel list-panel">
+        <div class="section-title">
+          <h2>최근 업로드</h2>
+          <span>최근 {{ config.recent_limit }}개</span>
+        </div>
+
+        {% if records %}
+          <div class="table-wrap">
+            <table>
+              <thead>
                 <tr>
-                  <td class="nowrap">{{ record.uploaded_at }}</td>
-                  <td>
-                    <div class="file-name">{{ record.original_filename }}</div>
-                    <div class="muted">{{ record.stored_filename }}</div>
-                  </td>
-                  <td>{{ record.storage_subdir or "기본 저장폴더" }}</td>
-                  <td class="memo">{{ record.memo }}</td>
-                  <td><a href="{{ record.download_url }}">열기</a></td>
+                  <th>일시</th>
+                  <th>파일</th>
+                  <th>저장 폴더</th>
+                  <th>메모</th>
+                  <th>링크</th>
                   {% if can_delete %}
-                    <td>
-                      <form
-                        action="{{ url_for('delete', upload_id=record.upload_id) }}"
-                        method="post"
-                        onsubmit="return confirm('파일과 CSV 기록을 삭제할까요?');">
-                        <button type="submit" class="danger">삭제</button>
-                      </form>
-                    </td>
+                    <th>삭제</th>
                   {% endif %}
                 </tr>
+              </thead>
+              <tbody>
+                {% for record in records %}
+                  <tr>
+                    <td class="nowrap">{{ record.uploaded_at }}</td>
+                    <td>
+                      <div class="file-name">{{ record.original_filename }}</div>
+                      <div class="muted">{{ record.stored_filename }}</div>
+                    </td>
+                    <td>{{ record.storage_subdir or "기본 저장폴더" }}</td>
+                    <td class="memo">{{ record.memo }}</td>
+                    <td><a href="{{ record.download_url }}">열기</a></td>
+                    {% if can_delete %}
+                      <td>
+                        <form
+                          action="{{ url_for('delete', upload_id=record.upload_id) }}"
+                          method="post"
+                          onsubmit="return confirm('파일과 CSV 기록을 삭제할까요?');">
+                          <button type="submit" class="danger">삭제</button>
+                        </form>
+                      </td>
+                    {% endif %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="empty">아직 업로드 기록이 없습니다.</p>
+        {% endif %}
+      </section>
+    </section>
+
+    <section id="network-mode" class="tab-panel" data-tab-panel hidden>
+      <main
+        class="network-layout"
+        data-network-check
+        data-upload-url="{{ url_for('network_check_upload') }}"
+        data-download-url="{{ url_for('network_check_download') }}">
+        <section class="panel network-control-panel">
+          <h2>네트워크 체크</h2>
+
+          <label>
+            <span>테스트 크기</span>
+            <select id="network-size" data-network-size>
+              {% for size_mb in network_check_size_options %}
+                <option value="{{ size_mb }}">{{ size_mb }}MB</option>
               {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <p class="empty">아직 업로드 기록이 없습니다.</p>
-      {% endif %}
+            </select>
+          </label>
+
+          <div class="network-actions">
+            <button type="button" class="secondary" data-check-action="upload">업로드 측정</button>
+            <button type="button" class="secondary" data-check-action="download">다운로드 측정</button>
+            <button type="button" class="primary" data-check-action="full">전체 측정</button>
+          </div>
+
+          <div class="notice warning compact-notice">
+            1024MB 측정은 사내망과 서버 PC 상태에 따라 시간이 오래 걸릴 수 있습니다.
+          </div>
+        </section>
+
+        <section class="panel network-result-panel" aria-live="polite">
+          <div class="section-title">
+            <h2>측정 결과</h2>
+            <span data-network-status>대기</span>
+          </div>
+
+          <div class="progress-track" aria-hidden="true">
+            <div class="progress-bar" data-progress-bar></div>
+          </div>
+
+          <dl class="metric-grid">
+            <div>
+              <dt>진행률</dt>
+              <dd data-progress-text>0%</dd>
+            </div>
+            <div>
+              <dt>현재 속도</dt>
+              <dd data-current-speed>-</dd>
+            </div>
+            <div>
+              <dt>완료 결과</dt>
+              <dd data-summary>-</dd>
+            </div>
+          </dl>
+
+          <div class="result-list" data-result-list></div>
+        </section>
+      </main>
     </section>
   </body>
 </html>

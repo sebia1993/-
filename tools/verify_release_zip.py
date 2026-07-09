@@ -16,6 +16,7 @@ REQUIRED_FILES = {
     "RELEASE_NOTES.md",
     "CHANGELOG.md",
     "data/upload_log.csv",
+    "data/network_check_log.csv",
     "uploads/README_UPLOADS_KO.txt",
 }
 FORBIDDEN_PARTS = {
@@ -53,14 +54,14 @@ def validate_no_forbidden_entries(names: set[str]) -> list[str]:
     return errors
 
 
-def validate_csv_header(zip_file: ZipFile) -> list[str]:
-    with zip_file.open("data/upload_log.csv") as handle:
+def validate_csv_header(zip_file: ZipFile, name: str, expected_prefix: list[str]) -> list[str]:
+    with zip_file.open(name) as handle:
         text = handle.read().decode("utf-8-sig")
     rows = list(csv.reader(text.splitlines()))
-    if not rows or rows[0][:3] != ["upload_id", "uploaded_at", "original_filename"]:
-        return ["data/upload_log.csv has an unexpected header"]
+    if not rows or rows[0][: len(expected_prefix)] != expected_prefix:
+        return [f"{name} has an unexpected header"]
     if len(rows) != 1:
-        return ["data/upload_log.csv must contain only the initial header row"]
+        return [f"{name} must contain only the initial header row"]
     return []
 
 
@@ -72,7 +73,21 @@ def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
         errors.extend(f"missing required file: {name}" for name in missing)
         errors.extend(validate_no_forbidden_entries(names))
         if "data/upload_log.csv" in names:
-            errors.extend(validate_csv_header(archive))
+            errors.extend(
+                validate_csv_header(
+                    archive,
+                    "data/upload_log.csv",
+                    ["upload_id", "uploaded_at", "original_filename"],
+                )
+            )
+        if "data/network_check_log.csv" in names:
+            errors.extend(
+                validate_csv_header(
+                    archive,
+                    "data/network_check_log.csv",
+                    ["checked_at", "client_ip", "direction"],
+                )
+            )
         if version and "README_START_HERE_KO.txt" in names:
             readme = archive.read("README_START_HERE_KO.txt").decode("utf-8-sig")
             if version not in readme:

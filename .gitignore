@@ -11,3 +11,4 @@ uploads/*
 !uploads/.gitkeep
 data/*.csv
 !data/upload_log.csv
+!data/network_check_log.csv

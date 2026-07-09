@@ -58,6 +58,7 @@ try {
 
     New-Item -ItemType Directory -Force -Path (Join-Path $PackageRoot "data"), (Join-Path $PackageRoot "uploads") | Out-Null
     Copy-Item "data/upload_log.csv" (Join-Path $PackageRoot "data/upload_log.csv")
+    Copy-Item "data/network_check_log.csv" (Join-Path $PackageRoot "data/network_check_log.csv")
     "업로드 파일이 저장되는 폴더입니다. 운영 중 생성된 파일은 GitHub에 올리지 마세요." | Set-Content -Path (Join-Path $PackageRoot "uploads/README_UPLOADS_KO.txt") -Encoding UTF8
 
     @"
@@ -123,10 +124,12 @@ pause
 - 파일 업로드, 선택 메모 입력, 저장 하위 폴더 지정
 - ``config.ini`` 기반 ``BASE_URL``, 포트, 저장 기준 폴더, 삭제 허용 IP 설정
 - ``/download/<upload_id>`` 형식의 직접 다운로드 링크
+- 업로드/다운로드 전송 속도를 확인하는 네트워크 체크 모드
 - 중복 파일명 경고 후 ID를 붙여 저장
 - 최근 50개 업로드 목록 표시
 - 허용 IP에서만 파일과 CSV 기록 삭제
 - ``data/upload_log.csv`` 기반 업로드 기록
+- ``data/network_check_log.csv`` 기반 네트워크 체크 기록
 
 ## 검증
 

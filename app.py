@@ -7,6 +7,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import uuid
 from configparser import ConfigParser
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import quote, urlparse
 
-from flask import Flask, abort, redirect, render_template, request, send_file, url_for
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
 
 
 def get_runtime_root() -> Path:
@@ -42,6 +43,20 @@ CSV_FIELDS = [
     "memo",
     "download_url",
 ]
+NETWORK_CHECK_FIELDS = [
+    "checked_at",
+    "client_ip",
+    "direction",
+    "size_mb",
+    "bytes_transferred",
+    "duration_seconds",
+    "mbps",
+    "status",
+]
+NETWORK_CHECK_SIZE_OPTIONS_MB = (10, 50, 100, 500, 1024)
+MEGABYTE = 1024 * 1024
+NETWORK_CHECK_CHUNK_SIZE = MEGABYTE
+NETWORK_CHECK_CHUNK = bytes(index % 251 for index in range(NETWORK_CHECK_CHUNK_SIZE))
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -52,6 +67,7 @@ WINDOWS_RESERVED_NAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 _csv_lock = threading.Lock()
+_network_check_csv_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -64,6 +80,7 @@ class AppConfig:
     delete_allowed_ips: tuple[str, ...]
     recent_limit: int
     log_path: Path
+    network_check_log_path: Path
 
 
 def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
@@ -96,6 +113,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
         delete_allowed_ips=parse_csv_list(section.get("DELETE_ALLOWED_IPS", "")),
         recent_limit=max(1, section.getint("RECENT_LIMIT", fallback=50)),
         log_path=app_root / "data" / "upload_log.csv",
+        network_check_log_path=app_root / "data" / "network_check_log.csv",
     )
 
 
@@ -108,13 +126,22 @@ def ensure_directories(config: AppConfig) -> None:
     config.storage_root.mkdir(parents=True, exist_ok=True)
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
     ensure_log_file(config.log_path)
+    ensure_network_check_log_file(config.network_check_log_path)
 
 
 def ensure_log_file(log_path: Path) -> None:
+    ensure_csv_file(log_path, CSV_FIELDS)
+
+
+def ensure_network_check_log_file(log_path: Path) -> None:
+    ensure_csv_file(log_path, NETWORK_CHECK_FIELDS)
+
+
+def ensure_csv_file(log_path: Path, fieldnames: list[str]) -> None:
     if log_path.exists() and log_path.stat().st_size > 0:
         return
     with log_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
 
 
@@ -268,6 +295,64 @@ def record_file_path(row: dict[str, str]) -> Path:
     return Path(row.get("storage_path", "")).expanduser().resolve()
 
 
+def parse_network_check_size(size_value: str | None) -> int:
+    try:
+        size_mb = int(size_value or "")
+    except ValueError as exc:
+        raise ValueError("허용되지 않는 네트워크 체크 크기입니다.") from exc
+    if size_mb not in NETWORK_CHECK_SIZE_OPTIONS_MB:
+        raise ValueError("허용되지 않는 네트워크 체크 크기입니다.")
+    return size_mb
+
+
+def network_check_total_bytes(size_mb: int) -> int:
+    return size_mb * MEGABYTE
+
+
+def calculate_mbps(byte_count: int, duration_seconds: float) -> float:
+    if duration_seconds <= 0:
+        return 0.0
+    return (byte_count * 8) / duration_seconds / 1_000_000
+
+
+def build_network_check_log_row(
+    *,
+    client_ip: str,
+    direction: str,
+    size_mb: int,
+    bytes_transferred: int,
+    duration_seconds: float,
+    status: str,
+) -> dict[str, str]:
+    return {
+        "checked_at": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z"),
+        "client_ip": client_ip,
+        "direction": direction,
+        "size_mb": str(size_mb),
+        "bytes_transferred": str(bytes_transferred),
+        "duration_seconds": f"{duration_seconds:.3f}",
+        "mbps": f"{calculate_mbps(bytes_transferred, duration_seconds):.2f}",
+        "status": status,
+    }
+
+
+def append_network_check_log(row: dict[str, str], config: AppConfig) -> None:
+    with _network_check_csv_lock:
+        ensure_network_check_log_file(config.network_check_log_path)
+        with config.network_check_log_path.open("a", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=NETWORK_CHECK_FIELDS)
+            writer.writerow({field: row.get(field, "") for field in NETWORK_CHECK_FIELDS})
+
+
+def read_network_check_log(config: AppConfig, limit: int | None = None) -> list[dict[str, str]]:
+    ensure_network_check_log_file(config.network_check_log_path)
+    with config.network_check_log_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    rows = [row for row in rows if row.get("checked_at")]
+    rows.reverse()
+    return rows[:limit] if limit else rows
+
+
 def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
     app = Flask(
         __name__,
@@ -291,6 +376,7 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
             render_template(
                 "index.html",
                 config=config,
+                network_check_size_options=NETWORK_CHECK_SIZE_OPTIONS_MB,
                 records=read_upload_log(config, config.recent_limit),
                 can_delete=is_delete_allowed(client_ip, config),
                 client_ip=client_ip,
@@ -402,6 +488,113 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
             file_path.unlink()
         delete_upload_log(upload_id, config)
         return redirect(url_for("index", deleted="1"))
+
+    @app.get("/network-check/download")
+    def network_check_download():
+        try:
+            size_mb = parse_network_check_size(request.args.get("size_mb"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        total_bytes = network_check_total_bytes(size_mb)
+        client_ip = normalize_ip(request.remote_addr)
+        started_at = time.perf_counter()
+        bytes_sent = 0
+
+        def generate():
+            nonlocal bytes_sent
+            status = "failure"
+            try:
+                remaining = total_bytes
+                while remaining > 0:
+                    chunk_size = min(NETWORK_CHECK_CHUNK_SIZE, remaining)
+                    chunk = NETWORK_CHECK_CHUNK if chunk_size == NETWORK_CHECK_CHUNK_SIZE else NETWORK_CHECK_CHUNK[:chunk_size]
+                    bytes_sent += len(chunk)
+                    remaining -= len(chunk)
+                    yield chunk
+                status = "success"
+            finally:
+                duration = time.perf_counter() - started_at
+                append_network_check_log(
+                    build_network_check_log_row(
+                        client_ip=client_ip,
+                        direction="download",
+                        size_mb=size_mb,
+                        bytes_transferred=bytes_sent,
+                        duration_seconds=duration,
+                        status=status,
+                    ),
+                    config,
+                )
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype="application/octet-stream",
+            headers={
+                "Cache-Control": "no-store, no-cache, max-age=0",
+                "Content-Length": str(total_bytes),
+                "Content-Disposition": f'attachment; filename="network-check-{size_mb}mb.bin"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.post("/network-check/upload")
+    def network_check_upload():
+        try:
+            size_mb = parse_network_check_size(request.args.get("size_mb"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        expected_bytes = network_check_total_bytes(size_mb)
+        client_ip = normalize_ip(request.remote_addr)
+        started_at = time.perf_counter()
+        bytes_received = 0
+        status = "failure"
+        status_code = 200
+        error_message = ""
+
+        try:
+            while True:
+                chunk = request.stream.read(NETWORK_CHECK_CHUNK_SIZE)
+                if not chunk:
+                    break
+                bytes_received += len(chunk)
+                if bytes_received > expected_bytes:
+                    error_message = "요청 크기가 선택한 테스트 크기보다 큽니다."
+                    status_code = 400
+                    break
+
+            if not error_message and bytes_received != expected_bytes:
+                error_message = "전송된 테스트 데이터 크기가 선택한 크기와 다릅니다."
+                status_code = 400
+            if not error_message:
+                status = "success"
+        except Exception:
+            error_message = "네트워크 체크 업로드 중 오류가 발생했습니다."
+            status_code = 500
+
+        duration = time.perf_counter() - started_at
+        row = build_network_check_log_row(
+            client_ip=client_ip,
+            direction="upload",
+            size_mb=size_mb,
+            bytes_transferred=bytes_received,
+            duration_seconds=duration,
+            status=status,
+        )
+        append_network_check_log(row, config)
+
+        payload = {
+            "direction": "upload",
+            "size_mb": size_mb,
+            "bytes_transferred": bytes_received,
+            "duration_seconds": float(row["duration_seconds"]),
+            "mbps": float(row["mbps"]),
+            "status": status,
+        }
+        if error_message:
+            payload["error"] = error_message
+        return jsonify(payload), status_code
 
     return app
 

@@ -36,12 +36,14 @@ This is not a general-purpose file transfer service. Keep the scope small.
 
 - `app.py`: Flask routes, config loading, upload/download/delete logic, and CSV
   handling.
-- `templates/` and `static/`: the single-page upload UI.
+- `templates/` and `static/`: the single-page upload UI and network check mode.
 - `tests/`: deterministic tests for upload, download, deletion, paths, links,
   and CSV behavior.
 - `config.ini`: sample/default operational settings. Do not store real secrets.
-- `data/upload_log.csv`: tracked initial CSV header only; operational records
-  should not be treated as source history.
+- `data/upload_log.csv`: tracked initial upload CSV header only; operational
+  records should not be treated as source history.
+- `data/network_check_log.csv`: tracked initial network-check CSV header only;
+  operational speed-test records should not be treated as source history.
 - `tools/`: Windows Release ZIP build and verification helpers.
 - `.github/workflows/release.yml`: Windows runner workflow that builds and
   uploads the executable ZIP asset.

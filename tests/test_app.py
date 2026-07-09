@@ -5,12 +5,15 @@ from zipfile import ZipFile
 
 import pytest
 
+import app as app_module
 from app import (
+    NETWORK_CHECK_FIELDS,
     build_download_url,
     create_app,
     is_delete_allowed,
     is_loopback_url,
     load_config,
+    read_network_check_log,
     read_upload_log,
     resolve_storage_path,
     run_smoke_check,
@@ -175,11 +178,77 @@ def test_delete_allowed_ip_normalization(tmp_path):
     assert not is_delete_allowed("10.10.10.6", config)
 
 
+def test_network_check_tab_and_size_options(app_client):
+    client, _, _ = app_client
+
+    response = client.get("/")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "네트워크 체크" in body
+    assert "1024MB" in body
+    assert "/network-check/upload" in body
+    assert "/network-check/download" in body
+
+
+def test_network_check_download_streams_and_logs(app_client, monkeypatch):
+    client, config, _ = app_client
+    monkeypatch.setattr(app_module, "MEGABYTE", 1024)
+
+    response = client.get("/network-check/download?size_mb=10")
+
+    assert response.status_code == 200
+    assert len(response.data) == 10 * 1024
+    rows = read_network_check_log(config)
+    assert rows[0]["direction"] == "download"
+    assert rows[0]["size_mb"] == "10"
+    assert rows[0]["bytes_transferred"] == str(10 * 1024)
+    assert rows[0]["status"] == "success"
+    assert read_upload_log(config) == []
+
+
+def test_network_check_upload_discards_body_and_logs(app_client, monkeypatch):
+    client, config, _ = app_client
+    monkeypatch.setattr(app_module, "MEGABYTE", 1024)
+
+    response = client.post(
+        "/network-check/upload?size_mb=10",
+        data=b"x" * (10 * 1024),
+        content_type="application/octet-stream",
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "success"
+    rows = read_network_check_log(config)
+    assert rows[0]["direction"] == "upload"
+    assert rows[0]["bytes_transferred"] == str(10 * 1024)
+    assert rows[0]["status"] == "success"
+    assert read_upload_log(config) == []
+    assert list(config.storage_root.rglob("*")) == []
+
+
+def test_network_check_rejects_invalid_size(app_client):
+    client, config, _ = app_client
+
+    response = client.post(
+        "/network-check/upload?size_mb=11",
+        data=b"x",
+        content_type="application/octet-stream",
+    )
+
+    assert response.status_code == 400
+    assert read_network_check_log(config) == []
+
+
 def test_csv_header_is_utf8_sig(app_client):
     _, config, _ = app_client
     with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
         header = next(csv.reader(handle))
     assert header[0] == "upload_id"
+
+    with config.network_check_log_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        network_header = next(csv.reader(handle))
+    assert network_header == NETWORK_CHECK_FIELDS
 
 
 def test_smoke_check_returns_success(tmp_path):
@@ -193,11 +262,15 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
         "upload_id,uploaded_at,original_filename,stored_filename,storage_subdir,"
         "storage_path,memo,download_url\n"
     )
+    network_csv_header = ",".join(NETWORK_CHECK_FIELDS) + "\n"
     with ZipFile(zip_path, "w") as archive:
-        for name in sorted(REQUIRED_FILES - {"README_START_HERE_KO.txt", "data/upload_log.csv"}):
+        for name in sorted(
+            REQUIRED_FILES - {"README_START_HERE_KO.txt", "data/upload_log.csv", "data/network_check_log.csv"}
+        ):
             archive.writestr(name, "sample")
         archive.writestr("README_START_HERE_KO.txt", "사내 업로드 v0.1.0 Windows 실행 ZIP")
         archive.writestr("data/upload_log.csv", csv_header)
+        archive.writestr("data/network_check_log.csv", network_csv_header)
 
     assert verify_zip(str(zip_path), "v0.1.0") == []
 
