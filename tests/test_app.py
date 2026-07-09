@@ -211,14 +211,30 @@ def test_network_check_upload_discards_body_and_logs(app_client, monkeypatch):
     client, config, _ = app_client
     monkeypatch.setattr(app_module, "MEGABYTE", 1024)
 
-    response = client.post(
-        "/network-check/upload?size_mb=10",
-        data=b"x" * (10 * 1024),
+    started = client.post("/network-check/upload/start?size_mb=10")
+    assert started.status_code == 200
+    session_id = started.json["session_id"]
+
+    first_chunk = client.post(
+        f"/network-check/upload/chunk/{session_id}",
+        data=b"x" * (6 * 1024),
         content_type="application/octet-stream",
     )
+    assert first_chunk.status_code == 200
+    assert first_chunk.json["bytes_received"] == 6 * 1024
+    assert read_network_check_log(config) == []
 
-    assert response.status_code == 200
-    assert response.json["status"] == "success"
+    second_chunk = client.post(
+        f"/network-check/upload/chunk/{session_id}",
+        data=b"x" * (4 * 1024),
+        content_type="application/octet-stream",
+    )
+    assert second_chunk.status_code == 200
+    assert second_chunk.json["complete"]
+
+    finished = client.post(f"/network-check/upload/finish/{session_id}")
+    assert finished.status_code == 200
+    assert finished.json["status"] == "success"
     rows = read_network_check_log(config)
     assert rows[0]["direction"] == "upload"
     assert rows[0]["bytes_transferred"] == str(10 * 1024)
@@ -230,14 +246,73 @@ def test_network_check_upload_discards_body_and_logs(app_client, monkeypatch):
 def test_network_check_rejects_invalid_size(app_client):
     client, config, _ = app_client
 
-    response = client.post(
-        "/network-check/upload?size_mb=11",
+    response = client.post("/network-check/upload/start?size_mb=11")
+
+    assert response.status_code == 400
+    assert read_network_check_log(config) == []
+
+
+def test_network_check_upload_rejects_missing_session(app_client):
+    client, config, _ = app_client
+
+    chunk = client.post(
+        "/network-check/upload/chunk/missing",
         data=b"x",
+        content_type="application/octet-stream",
+    )
+    finished = client.post("/network-check/upload/finish/missing")
+
+    assert chunk.status_code == 404
+    assert finished.status_code == 404
+    assert read_network_check_log(config) == []
+
+
+def test_network_check_upload_logs_incomplete_body(app_client, monkeypatch):
+    client, config, _ = app_client
+    monkeypatch.setattr(app_module, "MEGABYTE", 1024)
+
+    started = client.post("/network-check/upload/start?size_mb=10")
+    session_id = started.json["session_id"]
+    chunk = client.post(
+        f"/network-check/upload/chunk/{session_id}",
+        data=b"x" * (9 * 1024),
+        content_type="application/octet-stream",
+    )
+    finished = client.post(f"/network-check/upload/finish/{session_id}")
+
+    assert chunk.status_code == 200
+    assert finished.status_code == 400
+    assert finished.json["status"] == "failure"
+    rows = read_network_check_log(config)
+    assert rows[0]["direction"] == "upload"
+    assert rows[0]["bytes_transferred"] == str(9 * 1024)
+    assert rows[0]["status"] == "failure"
+
+
+def test_network_check_upload_rejects_oversized_body(app_client, monkeypatch):
+    client, config, _ = app_client
+    monkeypatch.setattr(app_module, "MEGABYTE", 1024)
+
+    started = client.post("/network-check/upload/start?size_mb=10")
+    session_id = started.json["session_id"]
+    response = client.post(
+        f"/network-check/upload/chunk/{session_id}",
+        data=b"x" * (11 * 1024),
         content_type="application/octet-stream",
     )
 
     assert response.status_code == 400
-    assert read_network_check_log(config) == []
+    assert response.json["status"] == "failure"
+    rows = read_network_check_log(config)
+    assert rows[0]["bytes_transferred"] == str(11 * 1024)
+    assert rows[0]["status"] == "failure"
+
+
+def test_network_check_js_avoids_request_stream_uploads():
+    script = Path("static/network_check.js").read_text(encoding="utf-8")
+
+    assert "ReadableStream" not in script
+    assert "duplex" not in script
 
 
 def test_csv_header_is_utf8_sig(app_client):

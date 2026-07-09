@@ -57,6 +57,7 @@ NETWORK_CHECK_SIZE_OPTIONS_MB = (10, 50, 100, 500, 1024)
 MEGABYTE = 1024 * 1024
 NETWORK_CHECK_CHUNK_SIZE = MEGABYTE
 NETWORK_CHECK_CHUNK = bytes(index % 251 for index in range(NETWORK_CHECK_CHUNK_SIZE))
+NETWORK_CHECK_UPLOAD_SESSION_TTL_SECONDS = 15 * 60
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -81,6 +82,16 @@ class AppConfig:
     recent_limit: int
     log_path: Path
     network_check_log_path: Path
+
+
+@dataclass
+class NetworkCheckUploadSession:
+    session_id: str
+    client_ip: str
+    size_mb: int
+    expected_bytes: int
+    started_at: float
+    bytes_received: int = 0
 
 
 def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
@@ -336,6 +347,28 @@ def build_network_check_log_row(
     }
 
 
+def build_network_check_response_payload(
+    *,
+    direction: str,
+    size_mb: int,
+    bytes_transferred: int,
+    duration_seconds: float,
+    status: str,
+    error: str = "",
+) -> dict[str, str | int | float]:
+    payload: dict[str, str | int | float] = {
+        "direction": direction,
+        "size_mb": size_mb,
+        "bytes_transferred": bytes_transferred,
+        "duration_seconds": float(f"{duration_seconds:.3f}"),
+        "mbps": float(f"{calculate_mbps(bytes_transferred, duration_seconds):.2f}"),
+        "status": status,
+    }
+    if error:
+        payload["error"] = error
+    return payload
+
+
 def append_network_check_log(row: dict[str, str], config: AppConfig) -> None:
     with _network_check_csv_lock:
         ensure_network_check_log_file(config.network_check_log_path)
@@ -361,6 +394,47 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
     )
     config = load_config(config_path)
     ensure_directories(config)
+    upload_sessions: dict[str, NetworkCheckUploadSession] = {}
+    upload_sessions_lock = threading.Lock()
+
+    def finalize_upload_session(
+        session: NetworkCheckUploadSession,
+        *,
+        status: str,
+        error: str = "",
+    ) -> dict[str, str | int | float]:
+        duration = time.perf_counter() - session.started_at
+        row = build_network_check_log_row(
+            client_ip=session.client_ip,
+            direction="upload",
+            size_mb=session.size_mb,
+            bytes_transferred=session.bytes_received,
+            duration_seconds=duration,
+            status=status,
+        )
+        append_network_check_log(row, config)
+        return build_network_check_response_payload(
+            direction="upload",
+            size_mb=session.size_mb,
+            bytes_transferred=session.bytes_received,
+            duration_seconds=duration,
+            status=status,
+            error=error,
+        )
+
+    def cleanup_expired_upload_sessions() -> None:
+        now = time.perf_counter()
+        expired_sessions = []
+        with upload_sessions_lock:
+            for session_id, session in list(upload_sessions.items()):
+                if now - session.started_at > NETWORK_CHECK_UPLOAD_SESSION_TTL_SECONDS:
+                    expired_sessions.append(upload_sessions.pop(session_id))
+        for session in expired_sessions:
+            finalize_upload_session(
+                session,
+                status="failure",
+                error="네트워크 체크 업로드 세션이 만료되었습니다.",
+            )
 
     def render_index(
         *,
@@ -595,6 +669,92 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
         if error_message:
             payload["error"] = error_message
         return jsonify(payload), status_code
+
+    @app.post("/network-check/upload/start")
+    def network_check_upload_start():
+        cleanup_expired_upload_sessions()
+        try:
+            size_mb = parse_network_check_size(request.args.get("size_mb"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        session_id = uuid.uuid4().hex
+        session = NetworkCheckUploadSession(
+            session_id=session_id,
+            client_ip=normalize_ip(request.remote_addr),
+            size_mb=size_mb,
+            expected_bytes=network_check_total_bytes(size_mb),
+            started_at=time.perf_counter(),
+        )
+        with upload_sessions_lock:
+            upload_sessions[session_id] = session
+        return jsonify(
+            {
+                "session_id": session_id,
+                "size_mb": size_mb,
+                "total_bytes": session.expected_bytes,
+                "chunk_size": NETWORK_CHECK_CHUNK_SIZE,
+            }
+        )
+
+    @app.post("/network-check/upload/chunk/<session_id>")
+    def network_check_upload_chunk(session_id: str):
+        cleanup_expired_upload_sessions()
+        chunk_bytes = 0
+        while True:
+            chunk = request.stream.read(NETWORK_CHECK_CHUNK_SIZE)
+            if not chunk:
+                break
+            chunk_bytes += len(chunk)
+
+        if chunk_bytes <= 0:
+            return jsonify({"error": "전송된 테스트 데이터가 없습니다."}), 400
+
+        failed_session = None
+        with upload_sessions_lock:
+            session = upload_sessions.get(session_id)
+            if not session:
+                return jsonify({"error": "네트워크 체크 업로드 세션을 찾을 수 없습니다."}), 404
+            if session.bytes_received + chunk_bytes > session.expected_bytes:
+                session.bytes_received += chunk_bytes
+                failed_session = upload_sessions.pop(session_id)
+            else:
+                session.bytes_received += chunk_bytes
+                return jsonify(
+                    {
+                        "session_id": session.session_id,
+                        "size_mb": session.size_mb,
+                        "bytes_received": session.bytes_received,
+                        "total_bytes": session.expected_bytes,
+                        "complete": session.bytes_received == session.expected_bytes,
+                    }
+                )
+
+        payload = finalize_upload_session(
+            failed_session,
+            status="failure",
+            error="요청 크기가 선택한 테스트 크기보다 큽니다.",
+        )
+        return jsonify(payload), 400
+
+    @app.post("/network-check/upload/finish/<session_id>")
+    def network_check_upload_finish(session_id: str):
+        cleanup_expired_upload_sessions()
+        with upload_sessions_lock:
+            session = upload_sessions.pop(session_id, None)
+        if not session:
+            return jsonify({"error": "네트워크 체크 업로드 세션을 찾을 수 없습니다."}), 404
+
+        if session.bytes_received != session.expected_bytes:
+            payload = finalize_upload_session(
+                session,
+                status="failure",
+                error="전송된 테스트 데이터 크기가 선택한 크기와 다릅니다.",
+            )
+            return jsonify(payload), 400
+
+        payload = finalize_upload_session(session, status="success")
+        return jsonify(payload)
 
     return app
 

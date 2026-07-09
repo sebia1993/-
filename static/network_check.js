@@ -35,10 +35,12 @@
     return `${seconds.toFixed(2)}초`;
   }
 
-  function buildUrl(baseUrl, sizeMb) {
+  function buildUrl(baseUrl, params) {
     const url = new URL(baseUrl, window.location.href);
-    url.searchParams.set("size_mb", String(sizeMb));
-    url.searchParams.set("_", String(Date.now()));
+    Object.entries(params || {}).forEach(([key, value]) => {
+      url.searchParams.set(key, String(value));
+    });
+    url.searchParams.set("_", `${Date.now()}-${Math.random()}`);
     return url.toString();
   }
 
@@ -114,32 +116,27 @@
         .join(" / ");
     }
 
-    function createUploadStream(totalBytes, startedAt) {
-      if (!window.ReadableStream) {
-        throw new Error("현재 브라우저는 스트리밍 업로드를 지원하지 않습니다.");
-      }
-
+    function makeUploadChunk() {
       const chunk = new Uint8Array(CHUNK_SIZE);
       for (let index = 0; index < chunk.length; index += 1) {
         chunk[index] = index % 251;
       }
+      return chunk;
+    }
 
-      let sentBytes = 0;
-      return new ReadableStream({
-        pull(controller) {
-          const remaining = totalBytes - sentBytes;
-          if (remaining <= 0) {
-            controller.close();
-            return;
-          }
+    async function fetchJson(url, options, label) {
+      let response;
+      try {
+        response = await fetch(url, options);
+      } catch (error) {
+        throw new Error(`${label} 요청에 실패했습니다. 서버 주소, 방화벽, 브라우저 연결을 확인하세요. (${error.message})`);
+      }
 
-          const nextSize = Math.min(CHUNK_SIZE, remaining);
-          const nextChunk = nextSize === CHUNK_SIZE ? chunk : chunk.subarray(0, nextSize);
-          controller.enqueue(nextChunk);
-          sentBytes += nextSize;
-          updateProgress(sentBytes, totalBytes, startedAt);
-        },
-      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || `${label} 요청이 실패했습니다.`);
+      }
+      return payload;
     }
 
     async function runDownload(sizeMb) {
@@ -148,9 +145,14 @@
       let receivedBytes = 0;
 
       resetProgress("다운로드 측정 중");
-      const response = await fetch(buildUrl(root.dataset.downloadUrl, sizeMb), {
-        cache: "no-store",
-      });
+      let response;
+      try {
+        response = await fetch(buildUrl(root.dataset.downloadUrl, { size_mb: sizeMb }), {
+          cache: "no-store",
+        });
+      } catch (error) {
+        throw new Error(`다운로드 측정 요청에 실패했습니다. 서버 주소, 방화벽, 브라우저 연결을 확인하세요. (${error.message})`);
+      }
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || "다운로드 측정 요청이 실패했습니다.");
@@ -175,23 +177,63 @@
     async function runUpload(sizeMb) {
       const totalBytes = sizeMb * MB;
       const startedAt = performance.now();
+      const uploadBaseUrl = root.dataset.uploadUrl;
+      const chunk = makeUploadChunk();
+      let sessionId = "";
+      let sentBytes = 0;
 
       resetProgress("업로드 측정 중");
-      const response = await fetch(buildUrl(root.dataset.uploadUrl, sizeMb), {
-        method: "POST",
-        body: createUploadStream(totalBytes, startedAt),
-        cache: "no-store",
-        duplex: "half",
-        headers: {
-          "Content-Type": "application/octet-stream",
-        },
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload.error || "업로드 측정 요청이 실패했습니다.");
-      }
+      try {
+        const started = await fetchJson(
+          buildUrl(`${uploadBaseUrl}/start`, { size_mb: sizeMb }),
+          { method: "POST", cache: "no-store" },
+          "업로드 시작"
+        );
+        sessionId = started.session_id;
 
-      return completeResult("업로드", totalBytes, totalBytes, startedAt);
+        while (sentBytes < totalBytes) {
+          const remaining = totalBytes - sentBytes;
+          const nextSize = Math.min(CHUNK_SIZE, remaining);
+          const body = nextSize === CHUNK_SIZE ? chunk : chunk.subarray(0, nextSize);
+          const chunkNumber = Math.floor(sentBytes / CHUNK_SIZE) + 1;
+          const chunkResult = await fetchJson(
+            buildUrl(`${uploadBaseUrl}/chunk/${encodeURIComponent(sessionId)}`),
+            {
+              method: "POST",
+              body,
+              cache: "no-store",
+              headers: {
+                "Content-Type": "application/octet-stream",
+              },
+            },
+            `업로드 ${chunkNumber}번째 조각`
+          );
+          sentBytes = Number(chunkResult.bytes_received);
+          updateProgress(sentBytes, totalBytes, startedAt);
+        }
+
+        const finished = await fetchJson(
+          buildUrl(`${uploadBaseUrl}/finish/${encodeURIComponent(sessionId)}`),
+          { method: "POST", cache: "no-store" },
+          "업로드 완료"
+        );
+        updateProgress(totalBytes, totalBytes, startedAt);
+        return {
+          label: "업로드",
+          sizeMb,
+          bytesDone: Number(finished.bytes_transferred),
+          elapsedSeconds: Number(finished.duration_seconds),
+          mbps: Number(finished.mbps),
+        };
+      } catch (error) {
+        if (sessionId) {
+          await fetch(buildUrl(`${uploadBaseUrl}/finish/${encodeURIComponent(sessionId)}`), {
+            method: "POST",
+            cache: "no-store",
+          }).catch(() => {});
+        }
+        throw error;
+      }
     }
 
     async function runAction(action) {
