@@ -5,6 +5,7 @@ import ipaddress
 import os
 import re
 import socket
+import sys
 import threading
 import uuid
 from configparser import ConfigParser
@@ -16,7 +17,20 @@ from urllib.parse import quote, urlparse
 from flask import Flask, abort, redirect, render_template, request, send_file, url_for
 
 
-APP_ROOT = Path(__file__).resolve().parent
+def get_runtime_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def get_resource_root() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS).resolve()
+    return Path(__file__).resolve().parent
+
+
+APP_ROOT = get_runtime_root()
+RESOURCE_ROOT = get_resource_root()
 CONFIG_SECTION = "app"
 CSV_FIELDS = [
     "upload_id",
@@ -255,7 +269,11 @@ def record_file_path(row: dict[str, str]) -> Path:
 
 
 def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
-    app = Flask(__name__)
+    app = Flask(
+        __name__,
+        template_folder=str(RESOURCE_ROOT / "templates"),
+        static_folder=str(RESOURCE_ROOT / "static"),
+    )
     config = load_config(config_path)
     ensure_directories(config)
 
@@ -388,7 +406,23 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
     return app
 
 
+def run_smoke_check(config_path: str | os.PathLike[str] | None = None) -> int:
+    config = load_config(config_path)
+    ensure_directories(config)
+    app = create_app(config_path)
+    with app.test_client() as client:
+        response = client.get("/")
+    if response.status_code != 200:
+        print(f"Smoke check failed: GET / returned {response.status_code}", file=sys.stderr)
+        return 1
+    print("Smoke check passed")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--smoke-check" in sys.argv:
+        raise SystemExit(run_smoke_check())
+
     active_config = load_config()
     ensure_directories(active_config)
     create_app().run(

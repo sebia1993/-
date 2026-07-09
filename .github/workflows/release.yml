@@ -1,0 +1,74 @@
+name: Release Windows ZIP
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag, for example v0.1.0"
+        required: true
+        default: "v0.1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-zip:
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Run source checks
+        shell: pwsh
+        run: |
+          python -m compileall app.py tests tools
+          python -m pytest -q
+
+      - name: Build Windows release ZIP
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_windows_release.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Upload ZIP to GitHub Release
+        shell: pwsh
+        run: |
+          $zip = "dist/internal-upload_${env:RELEASE_VERSION}_windows.zip"
+          $notes = "dist/release_notes_${env:RELEASE_VERSION}.md"
+          $title = "$env:RELEASE_VERSION - 사내 업로드 Windows 실행 ZIP"
+
+          if (-not (Test-Path $zip)) {
+            throw "Missing release ZIP: $zip"
+          }
+          if (-not (Test-Path $notes)) {
+            throw "Missing release notes: $notes"
+          }
+
+          gh release view $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title $title --notes-file $notes
+          }
+          else {
+            gh release edit $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --title $title --notes-file $notes
+          }
+
+          gh release upload $env:RELEASE_VERSION $zip --repo $env:GITHUB_REPOSITORY --clobber

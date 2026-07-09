@@ -1,6 +1,7 @@
 import csv
 import io
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -12,7 +13,9 @@ from app import (
     load_config,
     read_upload_log,
     resolve_storage_path,
+    run_smoke_check,
 )
+from tools.verify_release_zip import REQUIRED_FILES, verify_zip
 
 
 def write_config(tmp_path: Path, *, base_url: str = "http://files.local:8000") -> Path:
@@ -177,3 +180,34 @@ def test_csv_header_is_utf8_sig(app_client):
     with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
         header = next(csv.reader(handle))
     assert header[0] == "upload_id"
+
+
+def test_smoke_check_returns_success(tmp_path):
+    config_path = write_config(tmp_path)
+    assert run_smoke_check(config_path) == 0
+
+
+def test_release_zip_verifier_accepts_expected_structure(tmp_path):
+    zip_path = tmp_path / "internal-upload_v0.1.0_windows.zip"
+    csv_header = (
+        "upload_id,uploaded_at,original_filename,stored_filename,storage_subdir,"
+        "storage_path,memo,download_url\n"
+    )
+    with ZipFile(zip_path, "w") as archive:
+        for name in sorted(REQUIRED_FILES - {"README_START_HERE_KO.txt", "data/upload_log.csv"}):
+            archive.writestr(name, "sample")
+        archive.writestr("README_START_HERE_KO.txt", "사내 업로드 v0.1.0 Windows 실행 ZIP")
+        archive.writestr("data/upload_log.csv", csv_header)
+
+    assert verify_zip(str(zip_path), "v0.1.0") == []
+
+
+def test_release_zip_verifier_rejects_dev_artifacts(tmp_path):
+    zip_path = tmp_path / "bad.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for name in REQUIRED_FILES:
+            archive.writestr(name, "v0.1.0")
+        archive.writestr(".venv/Lib/site-packages/example.txt", "bad")
+
+    errors = verify_zip(str(zip_path), "v0.1.0")
+    assert any(".venv" in error for error in errors)

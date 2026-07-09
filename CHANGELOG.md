@@ -19,13 +19,14 @@
 - 업로드, 다운로드, 삭제, 경로 검증, 링크 생성, CSV 기록에 대한 pytest 테스트를 추가했습니다.
 - GitHub 이력관리를 위해 README, 릴리즈 점검 문서, 변경 기록, Codex 작업 규칙을 함께 관리합니다.
 - `v0.1.0` Git tag와 GitHub Release를 수동으로 관리하는 초기 릴리즈 기준을 문서화했습니다.
+- Python 설치 없이 Windows에서 실행할 수 있는 `internal-upload_v0.1.0_windows.zip` Release asset 빌드 경로를 추가했습니다.
 
 현재 제외된 항목:
 
 - 로그인, 권한관리, 수신자 지정, 만료일, 관리자 페이지
 - DB 저장 방식
 - 정식 도메인 기반 링크 생성
-- Windows EXE 또는 ZIP Release asset
+- 코드서명, installer, MSIX
 
 ## 문서 변경 원칙
 

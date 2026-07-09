@@ -28,9 +28,9 @@ This is not a general-purpose file transfer service. Keep the scope small.
   operating data out of Git.
 - Before any GitHub push or Release work, check whether `README.md`,
   `RELEASE_NOTES.md`, and `CHANGELOG.md` still match the current behavior.
-- When a version is ready for sharing, create or update the matching Git tag and
-  GitHub Release. Keep the Release body aligned with `RELEASE_NOTES.md` and
-  `CHANGELOG.md`.
+- When a version is ready for sharing, create or update the matching Git tag,
+  GitHub Release, and Windows ZIP asset. Keep the Release body aligned with
+  `RELEASE_NOTES.md` and `CHANGELOG.md`.
 
 ## Important Areas
 
@@ -42,6 +42,9 @@ This is not a general-purpose file transfer service. Keep the scope small.
 - `config.ini`: sample/default operational settings. Do not store real secrets.
 - `data/upload_log.csv`: tracked initial CSV header only; operational records
   should not be treated as source history.
+- `tools/`: Windows Release ZIP build and verification helpers.
+- `.github/workflows/release.yml`: Windows runner workflow that builds and
+  uploads the executable ZIP asset.
 
 ## Validation Commands
 
@@ -56,7 +59,7 @@ python -m pytest -q
 On macOS in this workspace, use:
 
 ```bash
-.venv/bin/python -m compileall app.py tests
+.venv/bin/python -m compileall app.py tests tools
 .venv/bin/python -m pytest -q
 ```
 
@@ -72,8 +75,8 @@ On macOS in this workspace, use:
 - Update `CHANGELOG.md` with user-facing changes before pushing to GitHub.
 - Keep `RELEASE_NOTES.md` aligned with the current release checklist and any
   future GitHub Release asset contract.
-- If a GitHub Release is created manually, record the same user-facing behavior,
-  validation commands, limitations, and asset policy in `RELEASE_NOTES.md`.
+- Record the same user-facing behavior, validation commands, limitations, ZIP
+  asset name, and SHA256 policy in `RELEASE_NOTES.md`.
 - Do not document features that are not implemented. If a feature is planned but
   not implemented, label it as not implemented.
 - Write README steps for users who are not comfortable with GitHub or

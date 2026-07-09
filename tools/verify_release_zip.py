@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import sys
+from pathlib import PurePosixPath
+from zipfile import ZipFile
+
+
+REQUIRED_FILES = {
+    "InternalUpload.exe",
+    "start_internal_upload.cmd",
+    "config.ini",
+    "README_START_HERE_KO.txt",
+    "README.md",
+    "RELEASE_NOTES.md",
+    "CHANGELOG.md",
+    "data/upload_log.csv",
+    "uploads/README_UPLOADS_KO.txt",
+}
+FORBIDDEN_PARTS = {
+    ".git",
+    ".github",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "tests",
+    "tools",
+}
+FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".spec"}
+
+
+def normalized_names(zip_file: ZipFile) -> set[str]:
+    names = set()
+    for name in zip_file.namelist():
+        normalized = name.replace("\\", "/").lstrip("/")
+        if normalized:
+            names.add(normalized)
+    return names
+
+
+def validate_no_forbidden_entries(names: set[str]) -> list[str]:
+    errors = []
+    for name in sorted(names):
+        path = PurePosixPath(name)
+        parts = set(path.parts)
+        if parts & FORBIDDEN_PARTS:
+            errors.append(f"forbidden path in ZIP: {name}")
+        if path.suffix.lower() in FORBIDDEN_SUFFIXES:
+            errors.append(f"forbidden file suffix in ZIP: {name}")
+    return errors
+
+
+def validate_csv_header(zip_file: ZipFile) -> list[str]:
+    with zip_file.open("data/upload_log.csv") as handle:
+        text = handle.read().decode("utf-8-sig")
+    rows = list(csv.reader(text.splitlines()))
+    if not rows or rows[0][:3] != ["upload_id", "uploaded_at", "original_filename"]:
+        return ["data/upload_log.csv has an unexpected header"]
+    if len(rows) != 1:
+        return ["data/upload_log.csv must contain only the initial header row"]
+    return []
+
+
+def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
+    errors = []
+    with ZipFile(zip_path) as archive:
+        names = normalized_names(archive)
+        missing = sorted(REQUIRED_FILES - names)
+        errors.extend(f"missing required file: {name}" for name in missing)
+        errors.extend(validate_no_forbidden_entries(names))
+        if "data/upload_log.csv" in names:
+            errors.extend(validate_csv_header(archive))
+        if version and "README_START_HERE_KO.txt" in names:
+            readme = archive.read("README_START_HERE_KO.txt").decode("utf-8-sig")
+            if version not in readme:
+                errors.append(f"README_START_HERE_KO.txt does not mention {version}")
+    return errors
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--zip", required=True, dest="zip_path")
+    parser.add_argument("--version", default="")
+    args = parser.parse_args(argv)
+
+    errors = verify_zip(args.zip_path, args.version or None)
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+    print("Release ZIP verification passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
