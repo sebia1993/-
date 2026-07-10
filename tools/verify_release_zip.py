@@ -17,6 +17,8 @@ REQUIRED_FILES = {
     "CHANGELOG.md",
     "data/upload_log.csv",
     "data/network_check_log.csv",
+    "data/network_check_session_log.csv",
+    "data/network_check_results/README_RESULTS_KO.txt",
     "uploads/README_UPLOADS_KO.txt",
 }
 FORBIDDEN_PARTS = {
@@ -72,6 +74,12 @@ def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
         missing = sorted(REQUIRED_FILES - names)
         errors.extend(f"missing required file: {name}" for name in missing)
         errors.extend(validate_no_forbidden_entries(names))
+        operational_results = sorted(
+            name
+            for name in names
+            if name.startswith("data/network_check_results/") and name.lower().endswith(".json")
+        )
+        errors.extend(f"operational result in ZIP: {name}" for name in operational_results)
         if "data/upload_log.csv" in names:
             errors.extend(
                 validate_csv_header(
@@ -86,6 +94,14 @@ def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
                     archive,
                     "data/network_check_log.csv",
                     ["checked_at", "client_ip", "direction"],
+                )
+            )
+        if "data/network_check_session_log.csv" in names:
+            errors.extend(
+                validate_csv_header(
+                    archive,
+                    "data/network_check_session_log.csv",
+                    ["checked_at", "session_id", "client_ip", "direction"],
                 )
             )
         if version and "README_START_HERE_KO.txt" in names:

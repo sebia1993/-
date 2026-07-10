@@ -18,6 +18,7 @@ from app import (
     resolve_storage_path,
     run_smoke_check,
 )
+from network_sustained import SUSTAINED_LOG_FIELDS
 from tools.verify_release_zip import REQUIRED_FILES, verify_zip
 
 
@@ -204,6 +205,9 @@ def test_network_check_tab_and_size_options(app_client):
     assert "평균 속도" in body
     assert "구간 속도" in body
     assert "측정 취소" in body
+    assert "지속 측정" in body
+    assert "HTTP 응답시간" in body
+    assert "data-sustained-action" in body
     assert "/network-check/upload" in body
     assert "/network-check/download" in body
 
@@ -344,6 +348,17 @@ def test_network_check_js_has_speed_and_cancel_guards():
     assert "data-cancel-check" in script
 
 
+def test_sustained_network_js_uses_regular_post_chunks():
+    script = Path("static/network_sustained.js").read_text(encoding="utf-8")
+
+    assert "duplex" not in script
+    assert "new ReadableStream" not in script
+    assert "AbortController" in script
+    assert "data-sustained-action" in script
+    assert "latency_samples_ms" in script
+    assert "window.confirm" in script
+
+
 def test_csv_header_is_utf8_sig(app_client):
     _, config, _ = app_client
     with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -367,14 +382,22 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
         "storage_path,memo,download_url\n"
     )
     network_csv_header = ",".join(NETWORK_CHECK_FIELDS) + "\n"
+    session_csv_header = ",".join(SUSTAINED_LOG_FIELDS) + "\n"
     with ZipFile(zip_path, "w") as archive:
         for name in sorted(
-            REQUIRED_FILES - {"README_START_HERE_KO.txt", "data/upload_log.csv", "data/network_check_log.csv"}
+            REQUIRED_FILES
+            - {
+                "README_START_HERE_KO.txt",
+                "data/upload_log.csv",
+                "data/network_check_log.csv",
+                "data/network_check_session_log.csv",
+            }
         ):
             archive.writestr(name, "sample")
         archive.writestr("README_START_HERE_KO.txt", "사내 업로드 v0.1.0 Windows 실행 ZIP")
         archive.writestr("data/upload_log.csv", csv_header)
         archive.writestr("data/network_check_log.csv", network_csv_header)
+        archive.writestr("data/network_check_session_log.csv", session_csv_header)
 
     assert verify_zip(str(zip_path), "v0.1.0") == []
 
@@ -388,3 +411,14 @@ def test_release_zip_verifier_rejects_dev_artifacts(tmp_path):
 
     errors = verify_zip(str(zip_path), "v0.1.0")
     assert any(".venv" in error for error in errors)
+
+
+def test_release_zip_verifier_rejects_operational_network_result(tmp_path):
+    zip_path = tmp_path / "bad-result.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for name in REQUIRED_FILES:
+            archive.writestr(name, "v0.3.0")
+        archive.writestr("data/network_check_results/private-session.json", "{}")
+
+    errors = verify_zip(str(zip_path), "v0.3.0")
+    assert any("operational result" in error for error in errors)

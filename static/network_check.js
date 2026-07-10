@@ -63,6 +63,7 @@
     const intervalSpeed = root.querySelector("[data-interval-speed]");
     const summary = root.querySelector("[data-summary]");
     const resultList = root.querySelector("[data-result-list]");
+    const measurementModeButtons = root.querySelectorAll("[data-measurement-mode]");
 
     let running = false;
     let activeController = null;
@@ -77,6 +78,10 @@
       cancelButton.disabled = !nextRunning;
       cancelButton.hidden = !nextRunning;
       sizeSelect.disabled = nextRunning;
+      measurementModeButtons.forEach((button) => {
+        button.disabled = nextRunning;
+      });
+      root.dataset.simpleRunning = nextRunning ? "true" : "";
     }
 
     function setStatus(message) {

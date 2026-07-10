@@ -12,3 +12,6 @@ uploads/*
 data/*.csv
 !data/upload_log.csv
 !data/network_check_log.csv
+!data/network_check_session_log.csv
+data/network_check_results/*
+!data/network_check_results/README_RESULTS_KO.txt

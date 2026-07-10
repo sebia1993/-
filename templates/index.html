@@ -6,6 +6,7 @@
     <title>사내 업로드</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script defer src="{{ url_for('static', filename='network_check.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='network_sustained.js') }}"></script>
   </head>
   <body>
     <header class="topbar">
@@ -164,61 +165,154 @@
         class="network-layout"
         data-network-check
         data-upload-url="{{ url_for('network_check_upload') }}"
-        data-download-url="{{ url_for('network_check_download') }}">
+        data-download-url="{{ url_for('network_check_download') }}"
+        data-sustained-session-url="{{ url_for('sustained_network.create_session') }}"
+        data-sustained-latency-url="{{ url_for('sustained_network.latency') }}">
         <section class="panel network-control-panel">
           <h2>네트워크 체크</h2>
 
-          <label>
-            <span>테스트 크기</span>
-            <select id="network-size" data-network-size>
-              {% for size_mb in network_check_size_options %}
-                <option value="{{ size_mb }}">{{ size_mb }}MB</option>
-              {% endfor %}
-            </select>
-          </label>
-
-          <div class="network-actions">
-            <button type="button" class="secondary" data-check-action="upload">업로드 측정</button>
-            <button type="button" class="secondary" data-check-action="download">다운로드 측정</button>
-            <button type="button" class="primary" data-check-action="full">전체 측정</button>
-            <button type="button" class="secondary" data-cancel-check disabled hidden>측정 취소</button>
+          <div class="measurement-tabs" role="tablist" aria-label="네트워크 측정 방식">
+            <button type="button" class="measurement-tab is-active" data-measurement-mode="simple" aria-selected="true">간편 측정</button>
+            <button type="button" class="measurement-tab" data-measurement-mode="sustained" aria-selected="false">지속 측정</button>
           </div>
 
-          <div class="notice warning compact-notice">
-            1024MB 측정은 사내망과 서버 PC 상태에 따라 시간이 오래 걸릴 수 있습니다.
+          <div data-measurement-control="simple">
+            <label>
+              <span>테스트 크기</span>
+              <select id="network-size" data-network-size>
+                {% for size_mb in network_check_size_options %}
+                  <option value="{{ size_mb }}">{{ size_mb }}MB</option>
+                {% endfor %}
+              </select>
+            </label>
+
+            <div class="network-actions">
+              <button type="button" class="secondary" data-check-action="upload">업로드 측정</button>
+              <button type="button" class="secondary" data-check-action="download">다운로드 측정</button>
+              <button type="button" class="primary" data-check-action="full">전체 측정</button>
+              <button type="button" class="secondary" data-cancel-check disabled hidden>측정 취소</button>
+            </div>
+
+            <div class="notice warning compact-notice">
+              1024MB 측정은 사내망과 서버 PC 상태에 따라 시간이 오래 걸릴 수 있습니다.
+            </div>
+          </div>
+
+          <div data-measurement-control="sustained" hidden>
+            <label>
+              <span>본 측정 시간</span>
+              <select data-sustained-duration>
+                <option value="10">10초</option>
+                <option value="30">30초</option>
+              </select>
+            </label>
+
+            <fieldset class="control-group">
+              <legend>HTTP 연결</legend>
+              <div class="segment-control">
+                <button type="button" class="is-active" data-sustained-stream="1" aria-pressed="true">1개</button>
+                <button type="button" data-sustained-stream="4" aria-pressed="false">4개</button>
+              </div>
+            </fieldset>
+
+            <div class="network-actions">
+              <button type="button" class="secondary" data-sustained-action="upload">업로드 측정</button>
+              <button type="button" class="secondary" data-sustained-action="download">다운로드 측정</button>
+              <button type="button" class="primary" data-sustained-action="full">전체 측정</button>
+              <button type="button" class="secondary" data-sustained-cancel disabled hidden>측정 취소</button>
+            </div>
+
+            <div class="notice warning compact-notice">
+              이 기능은 브라우저의 HTTP 전송 성능을 측정합니다. TCP·UDP 정밀 측정이나 iperf 결과와는 다릅니다.
+            </div>
           </div>
         </section>
 
         <section class="panel network-result-panel" aria-live="polite">
-          <div class="section-title">
-            <h2>측정 결과</h2>
-            <span data-network-status>대기</span>
+          <div data-measurement-result="simple">
+            <div class="section-title">
+              <h2>간편 측정 결과</h2>
+              <span data-network-status>대기</span>
+            </div>
+
+            <div class="progress-track" aria-hidden="true">
+              <div class="progress-bar" data-progress-bar></div>
+            </div>
+
+            <dl class="metric-grid">
+              <div>
+                <dt>진행률</dt>
+                <dd data-progress-text>0%</dd>
+              </div>
+              <div>
+                <dt>평균 속도</dt>
+                <dd data-average-speed>-</dd>
+              </div>
+              <div>
+                <dt>구간 속도</dt>
+                <dd data-interval-speed>-</dd>
+              </div>
+              <div>
+                <dt>완료 결과</dt>
+                <dd data-summary>-</dd>
+              </div>
+            </dl>
+
+            <div class="result-list" data-result-list></div>
           </div>
 
-          <div class="progress-track" aria-hidden="true">
-            <div class="progress-bar" data-progress-bar></div>
+          <div data-measurement-result="sustained" hidden>
+            <div class="section-title">
+              <h2>지속 측정 결과</h2>
+              <span data-sustained-status>대기</span>
+            </div>
+
+            <div class="progress-track" aria-hidden="true">
+              <div class="progress-bar" data-sustained-progress-bar></div>
+            </div>
+
+            <div class="sustained-phase" data-sustained-phase>대기</div>
+
+            <dl class="metric-grid sustained-metrics">
+              <div>
+                <dt>HTTP 응답시간</dt>
+                <dd data-sustained-latency>-</dd>
+              </div>
+              <div>
+                <dt>평균 속도</dt>
+                <dd data-sustained-average>-</dd>
+              </div>
+              <div>
+                <dt>현재 속도</dt>
+                <dd data-sustained-current>-</dd>
+              </div>
+              <div>
+                <dt>최소 / 최대</dt>
+                <dd data-sustained-range>-</dd>
+              </div>
+              <div>
+                <dt>중앙값</dt>
+                <dd data-sustained-median>-</dd>
+              </div>
+              <div>
+                <dt>변동률</dt>
+                <dd data-sustained-variability>-</dd>
+              </div>
+            </dl>
+
+            <div class="throughput-chart">
+              <canvas data-sustained-chart width="900" height="280" aria-label="1초 구간 HTTP 처리량 그래프"></canvas>
+              <div class="chart-legend">
+                <span><i class="legend-upload"></i>업로드</span>
+                <span><i class="legend-download"></i>다운로드</span>
+              </div>
+            </div>
+
+            <div class="result-list" data-sustained-result-list></div>
+            <div class="actions sustained-result-actions">
+              <a class="secondary" data-sustained-json hidden>상세 JSON 받기</a>
+            </div>
           </div>
-
-          <dl class="metric-grid">
-            <div>
-              <dt>진행률</dt>
-              <dd data-progress-text>0%</dd>
-            </div>
-            <div>
-              <dt>평균 속도</dt>
-              <dd data-average-speed>-</dd>
-            </div>
-            <div>
-              <dt>구간 속도</dt>
-              <dd data-interval-speed>-</dd>
-            </div>
-            <div>
-              <dt>완료 결과</dt>
-              <dd data-summary>-</dd>
-            </div>
-          </dl>
-
-          <div class="result-list" data-result-list></div>
         </section>
       </main>
     </section>

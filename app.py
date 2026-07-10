@@ -17,6 +17,8 @@ from urllib.parse import quote, urlparse
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
 
+from network_sustained import create_sustained_blueprint, ensure_sustained_storage
+
 
 def get_runtime_root() -> Path:
     if getattr(sys, "frozen", False):
@@ -82,6 +84,8 @@ class AppConfig:
     recent_limit: int
     log_path: Path
     network_check_log_path: Path
+    network_check_session_log_path: Path
+    network_check_results_root: Path
 
 
 @dataclass
@@ -125,6 +129,8 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
         recent_limit=max(1, section.getint("RECENT_LIMIT", fallback=50)),
         log_path=app_root / "data" / "upload_log.csv",
         network_check_log_path=app_root / "data" / "network_check_log.csv",
+        network_check_session_log_path=app_root / "data" / "network_check_session_log.csv",
+        network_check_results_root=app_root / "data" / "network_check_results",
     )
 
 
@@ -138,6 +144,7 @@ def ensure_directories(config: AppConfig) -> None:
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
     ensure_log_file(config.log_path)
     ensure_network_check_log_file(config.network_check_log_path)
+    ensure_sustained_storage(config.network_check_session_log_path, config.network_check_results_root)
 
 
 def ensure_log_file(log_path: Path) -> None:
@@ -406,6 +413,13 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
     ensure_directories(config)
     upload_sessions: dict[str, NetworkCheckUploadSession] = {}
     upload_sessions_lock = threading.Lock()
+    sustained_blueprint, sustained_manager = create_sustained_blueprint(
+        log_path=config.network_check_session_log_path,
+        results_root=config.network_check_results_root,
+        normalize_ip=normalize_ip,
+    )
+    app.register_blueprint(sustained_blueprint)
+    app.extensions["sustained_network_check"] = sustained_manager
 
     def finalize_upload_session(
         session: NetworkCheckUploadSession,
@@ -797,4 +811,5 @@ if __name__ == "__main__":
         host=active_config.host,
         port=active_config.port,
         debug=False,
+        threaded=True,
     )

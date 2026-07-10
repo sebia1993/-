@@ -56,9 +56,11 @@ try {
     Copy-Item "RELEASE_NOTES.md" (Join-Path $PackageRoot "RELEASE_NOTES.md")
     Copy-Item "CHANGELOG.md" (Join-Path $PackageRoot "CHANGELOG.md")
 
-    New-Item -ItemType Directory -Force -Path (Join-Path $PackageRoot "data"), (Join-Path $PackageRoot "uploads") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $PackageRoot "data"), (Join-Path $PackageRoot "data/network_check_results"), (Join-Path $PackageRoot "uploads") | Out-Null
     Copy-Item "data/upload_log.csv" (Join-Path $PackageRoot "data/upload_log.csv")
     Copy-Item "data/network_check_log.csv" (Join-Path $PackageRoot "data/network_check_log.csv")
+    Copy-Item "data/network_check_session_log.csv" (Join-Path $PackageRoot "data/network_check_session_log.csv")
+    Copy-Item "data/network_check_results/README_RESULTS_KO.txt" (Join-Path $PackageRoot "data/network_check_results/README_RESULTS_KO.txt")
     "업로드 파일이 저장되는 폴더입니다. 운영 중 생성된 파일은 GitHub에 올리지 마세요." | Set-Content -Path (Join-Path $PackageRoot "uploads/README_UPLOADS_KO.txt") -Encoding UTF8
 
     @"
@@ -90,7 +92,7 @@ pause
 
 주의:
 - 코드서명하지 않은 EXE이므로 Windows SmartScreen 경고가 표시될 수 있습니다.
-- 실제 업로드 파일과 운영 CSV 기록은 GitHub에 올리지 마세요.
+- 실제 업로드 파일과 운영 CSV·JSON 기록은 GitHub에 올리지 마세요.
 "@ | Set-Content -Path (Join-Path $PackageRoot "README_START_HERE_KO.txt") -Encoding UTF8
 
     Compress-Archive -Path (Join-Path $PackageRoot "*") -DestinationPath $ZipPath -Force
@@ -132,10 +134,13 @@ pause
 - 허용 IP에서만 파일과 CSV 기록 삭제
 - ``data/upload_log.csv`` 기반 업로드 기록
 - ``data/network_check_log.csv`` 기반 네트워크 체크 기록
+- 3초 워밍 후 10초/30초를 측정하는 HTTP 지속 측정
+- 1개/4개 HTTP 연결, 1초 구간 그래프, HTTP 응답시간, 취소 지원
+- ``data/network_check_session_log.csv`` 요약과 세션별 JSON 상세 결과
 
 ## 검증
 
-- ``python -m compileall app.py tests tools`` 통과
+- ``python -m compileall app.py network_sustained.py tests tools`` 통과
 - ``python -m pytest -q`` 통과
 - ``InternalUpload.exe --smoke-check`` 통과
 - Windows ZIP 구조 검증 통과
@@ -144,6 +149,7 @@ pause
 
 - 로그인, 권한관리, 수신자 지정, 만료일, 관리자 페이지는 포함하지 않습니다.
 - DB를 사용하지 않습니다.
+- 지속 측정은 브라우저 HTTP 전송 성능이며 TCP·UDP 정밀 측정이나 iperf 결과와는 다릅니다.
 - 코드서명하지 않은 EXE이므로 Windows SmartScreen 경고가 표시될 수 있습니다.
 - GitHub 기본 ``Source code (zip)`` / ``Source code (tar.gz)``는 소스 아카이브이며 일반 실행용 파일은 아닙니다.
 "@ | Set-Content -Path $ReleaseNotesPath -Encoding UTF8

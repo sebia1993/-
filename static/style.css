@@ -19,6 +19,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -268,13 +272,53 @@ select:disabled {
 
 .network-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .network-actions .primary,
 .network-actions .secondary {
   width: 100%;
+}
+
+.measurement-tabs,
+.segment-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.measurement-tab,
+.segment-control button {
+  width: 100%;
+  background: #ffffff;
+  border-color: #aeb8a7;
+  color: #26352d;
+}
+
+.measurement-tab.is-active,
+.segment-control button.is-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+
+.control-group {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0 0 14px;
+}
+
+.control-group legend {
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.segment-control {
+  margin-bottom: 0;
 }
 
 .progress-track {
@@ -323,6 +367,63 @@ select:disabled {
   display: grid;
   gap: 8px;
   margin-top: 14px;
+}
+
+.sustained-phase {
+  min-height: 24px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.sustained-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.throughput-chart {
+  margin-top: 16px;
+  min-height: 320px;
+}
+
+.throughput-chart canvas {
+  display: block;
+  width: 100%;
+  height: 280px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.chart-legend {
+  display: flex;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-legend i {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.legend-upload {
+  background: #246b54;
+}
+
+.legend-download {
+  background: #c15f2e;
+}
+
+.sustained-result-actions {
+  margin-bottom: 0;
 }
 
 .result-item {
@@ -405,7 +506,16 @@ th {
   .mode-tabs,
   .network-actions,
   .network-layout,
-  .metric-grid {
+  .metric-grid,
+  .sustained-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .throughput-chart {
+    min-height: 270px;
+  }
+
+  .throughput-chart canvas {
+    height: 230px;
   }
 }

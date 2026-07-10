@@ -36,6 +36,8 @@ This is not a general-purpose file transfer service. Keep the scope small.
 
 - `app.py`: Flask routes, config loading, upload/download/delete logic, and CSV
   handling.
+- `network_sustained.py`: duration-based HTTP measurement sessions, statistics,
+  cancellation, and CSV/JSON result persistence.
 - `templates/` and `static/`: the single-page upload UI and network check mode.
 - `tests/`: deterministic tests for upload, download, deletion, paths, links,
   and CSV behavior.
@@ -44,6 +46,9 @@ This is not a general-purpose file transfer service. Keep the scope small.
   records should not be treated as source history.
 - `data/network_check_log.csv`: tracked initial network-check CSV header only;
   operational speed-test records should not be treated as source history.
+- `data/network_check_session_log.csv`: tracked sustained-check CSV header only.
+- `data/network_check_results/`: tracked README only; operational JSON results
+  must remain untracked.
 - `tools/`: Windows Release ZIP build and verification helpers.
 - `.github/workflows/release.yml`: Windows runner workflow that builds and
   uploads the executable ZIP asset.
@@ -54,14 +59,14 @@ Use the narrowest relevant check while developing, then run the full baseline
 before calling work complete.
 
 ```powershell
-python -m compileall app.py tests
+python -m compileall app.py network_sustained.py tests
 python -m pytest -q
 ```
 
 On macOS in this workspace, use:
 
 ```bash
-.venv/bin/python -m compileall app.py tests tools
+.venv/bin/python -m compileall app.py network_sustained.py tests tools
 .venv/bin/python -m pytest -q
 ```
 

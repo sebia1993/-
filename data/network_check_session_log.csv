@@ -1,0 +1,1 @@
+﻿checked_at,session_id,client_ip,direction,duration_seconds,warmup_seconds,stream_count,bytes_transferred,actual_duration_seconds,average_mbps,median_mbps,min_mbps,max_mbps,variability_percent,http_latency_median_ms,status,error,result_json
