@@ -17,7 +17,7 @@ from network_probe.protocol import recv_frame, send_frame
 from network_probe.self_check import run_probe_self_check
 from network_probe.service import ProbeService, ProbeServiceError
 from network_probe.tcp_engine import aggregate_stream_results, run_receiver_stream, run_sender_stream
-from network_probe.windows_tcp_info import snapshot_tcp_info
+from network_probe.windows_tcp_info import SIO_TCP_INFO, snapshot_tcp_info
 
 
 def available_port() -> int:
@@ -146,6 +146,10 @@ def test_probe_self_check_transfers_bytes():
 def test_probe_client_rejects_invalid_server_port():
     with pytest.raises(ProbeClientError, match="포트"):
         normalize_server_url("127.0.0.1:not-a-port")
+
+
+def test_windows_tcp_info_uses_winsock_vendor_ioctl_code():
+    assert SIO_TCP_INFO == 0xD8000027
 
 
 def test_disabled_probe_rejects_registration(tmp_path):

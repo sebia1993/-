@@ -6,7 +6,8 @@ import socket
 from typing import Any
 
 
-SIO_TCP_INFO = 0x40047427
+# Windows SDK: _WSAIORW(IOC_VENDOR, 39)
+SIO_TCP_INFO = 0xD8000027
 SOCKET_ERROR = -1
 
 
