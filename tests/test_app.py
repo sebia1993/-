@@ -360,6 +360,15 @@ def test_sustained_network_js_uses_regular_post_chunks():
     assert "window.confirm" in script
 
 
+def test_windows_release_checksum_uses_portable_lf_line_ending():
+    script = Path("tools/build_windows_release.ps1").read_text(encoding="utf-8")
+
+    assert "[System.IO.File]::WriteAllText($ShaPath" in script
+    assert '"$Hash  $PackageName.zip`n"' in script
+    assert "ReadAllBytes($ShaPath) -contains 13" in script
+    assert "Set-Content -Path $ShaPath" not in script
+
+
 def test_csv_header_is_utf8_sig(app_client):
     _, config, _ = app_client
     with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:

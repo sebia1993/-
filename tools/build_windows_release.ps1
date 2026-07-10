@@ -137,7 +137,11 @@ TCP 정밀 측정:
     python tools/verify_release_zip.py --zip $ZipPath --version $Version
 
     $Hash = (Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$Hash  $PackageName.zip" | Set-Content -Path $ShaPath -Encoding ASCII
+    $ChecksumLine = "$Hash  $PackageName.zip`n"
+    [System.IO.File]::WriteAllText($ShaPath, $ChecksumLine, [System.Text.Encoding]::ASCII)
+    if ([System.IO.File]::ReadAllBytes($ShaPath) -contains 13) {
+        throw "SHA256 file must use LF line endings"
+    }
 
     @"
 # $Version - 사내 업로드 Windows 실행 ZIP
