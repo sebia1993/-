@@ -306,6 +306,16 @@ def record_file_path(row: dict[str, str]) -> Path:
     return Path(row.get("storage_path", "")).expanduser().resolve()
 
 
+def cleanup_created_file(file_path: Path, existed_before: bool) -> None:
+    if existed_before:
+        return
+    try:
+        if file_path.exists() and file_path.is_file():
+            file_path.unlink()
+    except OSError:
+        return
+
+
 def parse_network_check_size(size_value: str | None) -> int:
     try:
         size_mb = int(size_value or "")
@@ -512,21 +522,26 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
         if original_target.exists():
             stored_filename = f"{upload_id}_{original_filename}"
         target_path = storage_dir / stored_filename
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        uploaded_file.save(target_path)
+        target_existed_before = target_path.exists()
+        try:
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            uploaded_file.save(target_path)
 
-        download_url = build_download_url(upload_id, config)
-        row = {
-            "upload_id": upload_id,
-            "uploaded_at": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z"),
-            "original_filename": original_filename,
-            "stored_filename": stored_filename,
-            "storage_subdir": normalized_subdir,
-            "storage_path": str(target_path.resolve()),
-            "memo": memo,
-            "download_url": download_url,
-        }
-        append_upload_log(row, config)
+            download_url = build_download_url(upload_id, config)
+            row = {
+                "upload_id": upload_id,
+                "uploaded_at": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z"),
+                "original_filename": original_filename,
+                "stored_filename": stored_filename,
+                "storage_subdir": normalized_subdir,
+                "storage_path": str(target_path.resolve()),
+                "memo": memo,
+                "download_url": download_url,
+            }
+            append_upload_log(row, config)
+        except Exception:
+            cleanup_created_file(target_path, target_existed_before)
+            raise
 
         return render_index(
             result={

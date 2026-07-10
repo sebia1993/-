@@ -98,6 +98,20 @@ def test_upload_saves_file_and_csv(app_client):
     assert Path(row["storage_path"]).read_bytes() == b"hello"
 
 
+def test_upload_log_failure_removes_saved_file(app_client, monkeypatch):
+    client, config, _ = app_client
+
+    def fail_append_upload_log(row, active_config):
+        raise OSError("log write failed")
+
+    monkeypatch.setattr(app_module, "append_upload_log", fail_append_upload_log)
+
+    with pytest.raises(OSError, match="log write failed"):
+        post_file(client, filename="orphan.txt", content=b"orphan")
+
+    assert not (config.storage_root / "orphan.txt").exists()
+
+
 def test_memo_is_optional(app_client):
     client, config, _ = app_client
     response = post_file(client, filename="memo-optional.txt")
