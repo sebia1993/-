@@ -19,6 +19,7 @@ from app import (
     run_smoke_check,
 )
 from network_sustained import SUSTAINED_LOG_FIELDS
+from network_probe.service import PROBE_LOG_FIELDS
 from tools.verify_release_zip import REQUIRED_FILES, verify_zip
 
 
@@ -383,6 +384,7 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
     )
     network_csv_header = ",".join(NETWORK_CHECK_FIELDS) + "\n"
     session_csv_header = ",".join(SUSTAINED_LOG_FIELDS) + "\n"
+    probe_csv_header = ",".join(PROBE_LOG_FIELDS) + "\n"
     with ZipFile(zip_path, "w") as archive:
         for name in sorted(
             REQUIRED_FILES
@@ -391,6 +393,7 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
                 "data/upload_log.csv",
                 "data/network_check_log.csv",
                 "data/network_check_session_log.csv",
+                "data/network_probe_log.csv",
             }
         ):
             archive.writestr(name, "sample")
@@ -398,6 +401,7 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
         archive.writestr("data/upload_log.csv", csv_header)
         archive.writestr("data/network_check_log.csv", network_csv_header)
         archive.writestr("data/network_check_session_log.csv", session_csv_header)
+        archive.writestr("data/network_probe_log.csv", probe_csv_header)
 
     assert verify_zip(str(zip_path), "v0.1.0") == []
 
@@ -422,3 +426,14 @@ def test_release_zip_verifier_rejects_operational_network_result(tmp_path):
 
     errors = verify_zip(str(zip_path), "v0.3.0")
     assert any("operational result" in error for error in errors)
+
+
+def test_release_zip_verifier_rejects_operational_probe_result(tmp_path):
+    zip_path = tmp_path / "bad-probe-result.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for name in REQUIRED_FILES:
+            archive.writestr(name, "v0.4.0-rc.1")
+        archive.writestr("data/network_probe_results/private-session.json", "{}")
+
+    errors = verify_zip(str(zip_path), "v0.4.0-rc.1")
+    assert any("operational probe result" in error for error in errors)

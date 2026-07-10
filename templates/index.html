@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script defer src="{{ url_for('static', filename='network_check.js') }}"></script>
     <script defer src="{{ url_for('static', filename='network_sustained.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='network_probe.js') }}"></script>
   </head>
   <body>
     <header class="topbar">
@@ -167,13 +168,17 @@
         data-upload-url="{{ url_for('network_check_upload') }}"
         data-download-url="{{ url_for('network_check_download') }}"
         data-sustained-session-url="{{ url_for('sustained_network.create_session') }}"
-        data-sustained-latency-url="{{ url_for('sustained_network.latency') }}">
+        data-sustained-latency-url="{{ url_for('sustained_network.latency') }}"
+        data-probe-status-url="{{ url_for('network_probe.status') }}"
+        data-probe-agents-url="{{ url_for('network_probe.agents') }}"
+        data-probe-sessions-url="{{ url_for('network_probe.create_session') }}">
         <section class="panel network-control-panel">
           <h2>네트워크 체크</h2>
 
           <div class="measurement-tabs" role="tablist" aria-label="네트워크 측정 방식">
             <button type="button" class="measurement-tab is-active" data-measurement-mode="simple" aria-selected="true">간편 측정</button>
             <button type="button" class="measurement-tab" data-measurement-mode="sustained" aria-selected="false">지속 측정</button>
+            <button type="button" class="measurement-tab" data-measurement-mode="probe" aria-selected="false">TCP 정밀 측정</button>
           </div>
 
           <div data-measurement-control="simple">
@@ -224,6 +229,42 @@
 
             <div class="notice warning compact-notice">
               이 기능은 브라우저의 HTTP 전송 성능을 측정합니다. TCP·UDP 정밀 측정이나 iperf 결과와는 다릅니다.
+            </div>
+          </div>
+
+          <div data-measurement-control="probe" hidden>
+            <div class="probe-service-status notice warning" data-probe-service-status>
+              TCP 측정 서버 상태 확인 중
+            </div>
+
+            <label>
+              <span>측정 클라이언트</span>
+              <select data-probe-agent disabled>
+                <option value="">연결된 Windows 클라이언트 없음</option>
+              </select>
+            </label>
+
+            <label>
+              <span>본 측정 시간</span>
+              <select data-probe-duration disabled>
+                <option value="10">10초</option>
+                <option value="30">30초</option>
+              </select>
+            </label>
+
+            <fieldset class="control-group">
+              <legend>TCP 스트림</legend>
+              <div class="segment-control">
+                <button type="button" class="is-active" data-probe-stream="1" aria-pressed="true" disabled>1개</button>
+                <button type="button" data-probe-stream="4" aria-pressed="false" disabled>4개</button>
+              </div>
+            </fieldset>
+
+            <div class="network-actions">
+              <button type="button" class="secondary" data-probe-action="upload" disabled>업로드 측정</button>
+              <button type="button" class="secondary" data-probe-action="download" disabled>다운로드 측정</button>
+              <button type="button" class="primary" data-probe-action="full" disabled>전체 측정</button>
+              <button type="button" class="secondary" data-probe-cancel disabled hidden>측정 취소</button>
             </div>
           </div>
         </section>
@@ -311,6 +352,41 @@
             <div class="result-list" data-sustained-result-list></div>
             <div class="actions sustained-result-actions">
               <a class="secondary" data-sustained-json hidden>상세 JSON 받기</a>
+            </div>
+          </div>
+
+          <div data-measurement-result="probe" hidden>
+            <div class="section-title">
+              <h2>TCP 정밀 측정 결과</h2>
+              <span data-probe-status>대기</span>
+            </div>
+
+            <div class="progress-track" aria-hidden="true">
+              <div class="progress-bar" data-probe-progress-bar></div>
+            </div>
+
+            <div class="sustained-phase" data-probe-phase>클라이언트 연결 대기</div>
+
+            <dl class="metric-grid sustained-metrics">
+              <div><dt>수신 처리량</dt><dd data-probe-receiver>-</dd></div>
+              <div><dt>송신 처리량</dt><dd data-probe-sender>-</dd></div>
+              <div><dt>RTT / 최소 RTT</dt><dd data-probe-rtt>-</dd></div>
+              <div><dt>혼잡 윈도우</dt><dd data-probe-cwnd>-</dd></div>
+              <div><dt>재전송 바이트</dt><dd data-probe-retrans>-</dd></div>
+              <div><dt>클라이언트</dt><dd data-probe-client>-</dd></div>
+            </dl>
+
+            <div class="throughput-chart">
+              <canvas data-probe-chart width="900" height="280" aria-label="1초 구간 TCP 수신 처리량 그래프"></canvas>
+              <div class="chart-legend">
+                <span><i class="legend-upload"></i>업로드</span>
+                <span><i class="legend-download"></i>다운로드</span>
+              </div>
+            </div>
+
+            <div class="result-list" data-probe-result-list></div>
+            <div class="actions sustained-result-actions">
+              <a class="secondary" data-probe-json hidden>상세 JSON 받기</a>
             </div>
           </div>
         </section>

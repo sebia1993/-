@@ -219,6 +219,10 @@ select:disabled {
   margin: 14px 0 0;
 }
 
+.probe-service-status {
+  margin: 0 0 14px;
+}
+
 .link-box {
   margin-top: 12px;
 }
@@ -281,7 +285,13 @@ select:disabled {
   width: 100%;
 }
 
-.measurement-tabs,
+.measurement-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
 .segment-control {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -504,6 +514,7 @@ th {
   }
 
   .mode-tabs,
+  .measurement-tabs,
   .network-actions,
   .network-layout,
   .metric-grid,

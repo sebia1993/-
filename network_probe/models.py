@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+PROBE_PROTOCOL_VERSION = 1
+PROBE_DIRECTIONS = ("upload", "download", "full")
+PROBE_DURATIONS = (10, 30)
+PROBE_STREAM_COUNTS = (1, 4)
+PROBE_WARMUP_SECONDS = 3.0
+
+
+@dataclass(frozen=True)
+class ProbeConfig:
+    enabled: bool
+    host: str
+    port: int
+    log_path: Path
+    results_root: Path
+    warmup_seconds: float = PROBE_WARMUP_SECONDS
+    agent_ttl_seconds: float = 45.0
+    long_poll_seconds: float = 20.0
+    stream_attach_timeout_seconds: float = 10.0
+
+
+@dataclass
+class AgentRecord:
+    agent_id: str
+    token: str
+    hostname: str
+    client_ip: str
+    server_host: str
+    protocol_version: int
+    registered_at: float
+    last_seen_at: float
+    busy_session_id: str = ""
+    pending_job: dict[str, Any] | None = None
+
+
+@dataclass
+class ProbeSession:
+    session_id: str
+    session_token: str
+    agent_id: str
+    agent_hostname: str
+    client_ip: str
+    server_host: str
+    requested_direction: str
+    duration_seconds: int
+    stream_count: int
+    created_at_monotonic: float
+    created_at_text: str
+    status: str = "queued"
+    active_phase: str = ""
+    phase_started_at: float = 0.0
+    error: str = ""
+    job_claimed: bool = False
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    sockets: dict[str, dict[int, Any]] = field(default_factory=dict)
+    server_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    agent_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    combined_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def phases(self) -> list[str]:
+        if self.requested_direction == "full":
+            return ["upload", "download"]
+        return [self.requested_direction]
+
+    def next_phase(self) -> str | None:
+        for phase in self.phases():
+            if phase not in self.combined_results:
+                return phase
+        return None

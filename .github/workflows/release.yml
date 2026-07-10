@@ -6,7 +6,7 @@ on:
       version:
         description: "Release version tag, for example v0.3.0"
         required: true
-        default: "v0.3.0"
+        default: "v0.4.0-rc.1"
   push:
     tags:
       - "v*"
@@ -41,7 +41,7 @@ jobs:
       - name: Run source checks
         shell: pwsh
         run: |
-          python -m compileall app.py network_sustained.py tests tools
+          python -m compileall app.py network_sustained.py network_measurement.py network_probe tests tools
           python -m pytest -q
 
       - name: Build Windows release ZIP
@@ -53,6 +53,7 @@ jobs:
         shell: pwsh
         run: |
           $zip = "dist/internal-upload_${env:RELEASE_VERSION}_windows.zip"
+          $sha = "$zip.sha256"
           $notes = "dist/release_notes_${env:RELEASE_VERSION}.md"
           $title = "$env:RELEASE_VERSION - 사내 업로드 Windows 실행 ZIP"
 
@@ -62,13 +63,28 @@ jobs:
           if (-not (Test-Path $notes)) {
             throw "Missing release notes: $notes"
           }
+          if (-not (Test-Path $sha)) {
+            throw "Missing SHA256 file: $sha"
+          }
+
+          $isPrerelease = $env:RELEASE_VERSION -match '-rc\.\d+$'
 
           gh release view $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title $title --notes-file $notes
+            if ($isPrerelease) {
+              gh release create $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title $title --notes-file $notes --prerelease
+            }
+            else {
+              gh release create $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title $title --notes-file $notes
+            }
           }
           else {
-            gh release edit $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --title $title --notes-file $notes
+            if ($isPrerelease) {
+              gh release edit $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --title $title --notes-file $notes --prerelease
+            }
+            else {
+              gh release edit $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --title $title --notes-file $notes --prerelease=false
+            }
           }
 
-          gh release upload $env:RELEASE_VERSION $zip --repo $env:GITHUB_REPOSITORY --clobber
+          gh release upload $env:RELEASE_VERSION $zip $sha --repo $env:GITHUB_REPOSITORY --clobber

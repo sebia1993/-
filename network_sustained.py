@@ -14,6 +14,8 @@ from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
+from network_measurement import NetworkMeasurementGate
+
 
 SUSTAINED_LOG_FIELDS = [
     "checked_at",
@@ -138,11 +140,13 @@ class SustainedCheckManager:
         log_path: Path,
         results_root: Path,
         settings: SustainedCheckSettings | None = None,
+        measurement_gate: NetworkMeasurementGate | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self.log_path = log_path
         self.results_root = results_root
         self.settings = settings or SustainedCheckSettings()
+        self.measurement_gate = measurement_gate
         self.clock = clock
         self.lock = threading.RLock()
         self.storage_lock = threading.Lock()
@@ -167,11 +171,16 @@ class SustainedCheckManager:
             raise SustainedCheckError("HTTP 연결 수는 1개 또는 4개만 선택할 수 있습니다.")
 
         now = self.clock()
+        session_id = uuid.uuid4().hex
         with self.lock:
             if self.active_session is not None:
                 raise SustainedCheckError("다른 지속 측정이 진행 중입니다.", 409)
+            if self.measurement_gate is not None and not self.measurement_gate.acquire(
+                "http_sustained", session_id
+            ):
+                raise SustainedCheckError("다른 네트워크 측정이 진행 중입니다.", 409)
             session = SustainedSession(
-                session_id=uuid.uuid4().hex,
+                session_id=session_id,
                 client_ip=client_ip,
                 requested_direction=direction,
                 duration_seconds=duration_seconds,
@@ -277,10 +286,14 @@ class SustainedCheckManager:
             if status == "success" and self.clock() + 0.05 < session.phase_deadline:
                 raise SustainedCheckError("현재 측정 단계가 아직 진행 중입니다.", 409)
             result = self._build_result(session, payload, status=status)
-            self._persist_result(result)
-            session.status = status
-            session.error = result["error"]
-            self.active_session = None
+            try:
+                self._persist_result(result)
+                session.status = status
+                session.error = result["error"]
+            finally:
+                self.active_session = None
+                if self.measurement_gate is not None:
+                    self.measurement_gate.release("http_sustained", session.session_id)
             return result
 
     def cancel(self, session_id: str, client_ip: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -296,8 +309,12 @@ class SustainedCheckManager:
                 {"error": "브라우저 연결이 끊어져 지속 측정 세션이 만료되었습니다."},
                 status="failure",
             )
-            self._persist_result(result)
-            self.active_session = None
+            try:
+                self._persist_result(result)
+            finally:
+                self.active_session = None
+                if self.measurement_gate is not None:
+                    self.measurement_gate.release("http_sustained", session.session_id)
 
     def result_path_for(self, session_id: str, client_ip: str) -> Path:
         if not session_id or any(character not in "0123456789abcdef" for character in session_id) or len(session_id) != 32:
@@ -444,12 +461,14 @@ def create_sustained_blueprint(
     results_root: Path,
     normalize_ip: Callable[[str | None], str],
     settings: SustainedCheckSettings | None = None,
+    measurement_gate: NetworkMeasurementGate | None = None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> tuple[Blueprint, SustainedCheckManager]:
     manager = SustainedCheckManager(
         log_path=log_path,
         results_root=results_root,
         settings=settings,
+        measurement_gate=measurement_gate,
         clock=clock,
     )
     blueprint = Blueprint("sustained_network", __name__)

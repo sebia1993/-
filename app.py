@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import argparse
 import ipaddress
 import os
 import re
@@ -18,6 +19,11 @@ from urllib.parse import quote, urlparse
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
 
 from network_sustained import create_sustained_blueprint, ensure_sustained_storage
+from network_measurement import NetworkMeasurementGate
+from network_probe.agent import ProbeClientError, run_probe_client
+from network_probe.models import ProbeConfig
+from network_probe.routes import create_probe_blueprint
+from network_probe.service import ProbeService, ensure_probe_storage
 
 
 def get_runtime_root() -> Path:
@@ -35,6 +41,7 @@ def get_resource_root() -> Path:
 APP_ROOT = get_runtime_root()
 RESOURCE_ROOT = get_resource_root()
 CONFIG_SECTION = "app"
+NETWORK_PROBE_SECTION = "network_probe"
 CSV_FIELDS = [
     "upload_id",
     "uploaded_at",
@@ -86,6 +93,10 @@ class AppConfig:
     network_check_log_path: Path
     network_check_session_log_path: Path
     network_check_results_root: Path
+    network_probe_enabled: bool
+    network_probe_port: int
+    network_probe_log_path: Path
+    network_probe_results_root: Path
 
 
 @dataclass
@@ -111,10 +122,15 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
         "DELETE_ALLOWED_IPS": "127.0.0.1,::1",
         "RECENT_LIMIT": "50",
     }
+    parser[NETWORK_PROBE_SECTION] = {
+        "ENABLED": "false",
+        "PORT": "5201",
+    }
     if path.exists():
         parser.read(path, encoding="utf-8")
 
     section = parser[CONFIG_SECTION]
+    probe_section = parser[NETWORK_PROBE_SECTION]
     storage_root = Path(section.get("STORAGE_ROOT", "uploads")).expanduser()
     if not storage_root.is_absolute():
         storage_root = app_root / storage_root
@@ -131,6 +147,20 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
         network_check_log_path=app_root / "data" / "network_check_log.csv",
         network_check_session_log_path=app_root / "data" / "network_check_session_log.csv",
         network_check_results_root=app_root / "data" / "network_check_results",
+        network_probe_enabled=probe_section.getboolean("ENABLED", fallback=False),
+        network_probe_port=max(1, min(65535, probe_section.getint("PORT", fallback=5201))),
+        network_probe_log_path=app_root / "data" / "network_probe_log.csv",
+        network_probe_results_root=app_root / "data" / "network_probe_results",
+    )
+
+
+def build_probe_config(config: AppConfig) -> ProbeConfig:
+    return ProbeConfig(
+        enabled=config.network_probe_enabled,
+        host=config.host,
+        port=config.network_probe_port,
+        log_path=config.network_probe_log_path,
+        results_root=config.network_probe_results_root,
     )
 
 
@@ -145,6 +175,7 @@ def ensure_directories(config: AppConfig) -> None:
     ensure_log_file(config.log_path)
     ensure_network_check_log_file(config.network_check_log_path)
     ensure_sustained_storage(config.network_check_session_log_path, config.network_check_results_root)
+    ensure_probe_storage(config.network_probe_log_path, config.network_probe_results_root)
 
 
 def ensure_log_file(log_path: Path) -> None:
@@ -403,7 +434,12 @@ def read_network_check_log(config: AppConfig, limit: int | None = None) -> list[
     return rows[:limit] if limit else rows
 
 
-def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
+def create_app(
+    config_path: str | os.PathLike[str] | None = None,
+    *,
+    probe_service: ProbeService | None = None,
+    measurement_gate: NetworkMeasurementGate | None = None,
+) -> Flask:
     app = Flask(
         __name__,
         template_folder=str(RESOURCE_ROOT / "templates"),
@@ -411,15 +447,25 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
     )
     config = load_config(config_path)
     ensure_directories(config)
+    active_gate = measurement_gate or NetworkMeasurementGate()
+    active_probe_service = probe_service or ProbeService(
+        config=build_probe_config(config),
+        measurement_gate=active_gate,
+        normalize_ip=normalize_ip,
+    )
     upload_sessions: dict[str, NetworkCheckUploadSession] = {}
     upload_sessions_lock = threading.Lock()
     sustained_blueprint, sustained_manager = create_sustained_blueprint(
         log_path=config.network_check_session_log_path,
         results_root=config.network_check_results_root,
         normalize_ip=normalize_ip,
+        measurement_gate=active_gate,
     )
     app.register_blueprint(sustained_blueprint)
+    app.register_blueprint(create_probe_blueprint(active_probe_service))
     app.extensions["sustained_network_check"] = sustained_manager
+    app.extensions["network_measurement_gate"] = active_gate
+    app.extensions["network_probe"] = active_probe_service
 
     def finalize_upload_session(
         session: NetworkCheckUploadSession,
@@ -436,7 +482,10 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
             duration_seconds=duration,
             status=status,
         )
-        append_network_check_log(row, config)
+        try:
+            append_network_check_log(row, config)
+        finally:
+            active_gate.release("http_quick", session.session_id)
         return build_network_check_response_payload(
             direction="upload",
             size_mb=session.size_mb,
@@ -599,6 +648,9 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        owner_id = uuid.uuid4().hex
+        if not active_gate.acquire("http_quick", owner_id):
+            return jsonify({"error": "다른 네트워크 측정이 진행 중입니다."}), 409
         total_bytes = network_check_total_bytes(size_mb)
         client_ip = normalize_ip(request.remote_addr)
         started_at = time.perf_counter()
@@ -618,17 +670,20 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
                 status = "success"
             finally:
                 duration = time.perf_counter() - started_at
-                append_network_check_log(
-                    build_network_check_log_row(
-                        client_ip=client_ip,
-                        direction="download",
-                        size_mb=size_mb,
-                        bytes_transferred=bytes_sent,
-                        duration_seconds=duration,
-                        status=status,
-                    ),
-                    config,
-                )
+                try:
+                    append_network_check_log(
+                        build_network_check_log_row(
+                            client_ip=client_ip,
+                            direction="download",
+                            size_mb=size_mb,
+                            bytes_transferred=bytes_sent,
+                            duration_seconds=duration,
+                            status=status,
+                        ),
+                        config,
+                    )
+                finally:
+                    active_gate.release("http_quick", owner_id)
 
         return Response(
             stream_with_context(generate()),
@@ -648,6 +703,9 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+        owner_id = uuid.uuid4().hex
+        if not active_gate.acquire("http_quick", owner_id):
+            return jsonify({"error": "다른 네트워크 측정이 진행 중입니다."}), 409
         expected_bytes = network_check_total_bytes(size_mb)
         client_ip = normalize_ip(request.remote_addr)
         started_at = time.perf_counter()
@@ -685,18 +743,20 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
             duration_seconds=duration,
             status=status,
         )
-        append_network_check_log(row, config)
-
-        payload = {
-            "direction": "upload",
-            "size_mb": size_mb,
-            "bytes_transferred": bytes_received,
-            "duration_seconds": float(row["duration_seconds"]),
-            "mbps": float(row["mbps"]),
-            "status": status,
-        }
-        if error_message:
-            payload["error"] = error_message
+        try:
+            append_network_check_log(row, config)
+            payload = {
+                "direction": "upload",
+                "size_mb": size_mb,
+                "bytes_transferred": bytes_received,
+                "duration_seconds": float(row["duration_seconds"]),
+                "mbps": float(row["mbps"]),
+                "status": status,
+            }
+            if error_message:
+                payload["error"] = error_message
+        finally:
+            active_gate.release("http_quick", owner_id)
         return jsonify(payload), status_code
 
     @app.post("/network-check/upload/start")
@@ -708,6 +768,8 @@ def create_app(config_path: str | os.PathLike[str] | None = None) -> Flask:
             return jsonify({"error": str(exc)}), 400
 
         session_id = uuid.uuid4().hex
+        if not active_gate.acquire("http_quick", session_id):
+            return jsonify({"error": "다른 네트워크 측정이 진행 중입니다."}), 409
         session = NetworkCheckUploadSession(
             session_id=session_id,
             client_ip=normalize_ip(request.remote_addr),
@@ -801,15 +863,62 @@ def run_smoke_check(config_path: str | os.PathLike[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    if "--smoke-check" in sys.argv:
-        raise SystemExit(run_smoke_check())
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="사내 업로드 서버 및 TCP 측정 클라이언트")
+    parser.add_argument("--smoke-check", action="store_true")
+    parser.add_argument("--probe-client", action="store_true")
+    parser.add_argument("--server", default="")
+    parser.add_argument("--probe-self-check", action="store_true")
+    parser.add_argument("--config", default="")
+    args = parser.parse_args(argv)
 
-    active_config = load_config()
+    config_path = args.config or None
+    if args.smoke_check:
+        return run_smoke_check(config_path)
+    if args.probe_client:
+        if not args.server:
+            parser.error("--probe-client에는 --server 주소가 필요합니다.")
+        try:
+            return run_probe_client(args.server)
+        except ProbeClientError as exc:
+            print(f"TCP 측정 클라이언트 실행 실패: {exc}", file=sys.stderr)
+            return 2
+    if args.probe_self_check:
+        from network_probe.self_check import run_probe_self_check
+
+        return run_probe_self_check()
+
+    active_config = load_config(config_path)
     ensure_directories(active_config)
-    create_app().run(
-        host=active_config.host,
-        port=active_config.port,
-        debug=False,
-        threaded=True,
+    measurement_gate = NetworkMeasurementGate()
+    probe_service = ProbeService(
+        config=build_probe_config(active_config),
+        measurement_gate=measurement_gate,
+        normalize_ip=normalize_ip,
     )
+    if active_config.network_probe_enabled:
+        if active_config.network_probe_port == active_config.port:
+            probe_service.start_error = "웹 포트와 TCP 측정 포트는 서로 달라야 합니다."
+            print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
+        elif probe_service.start():
+            print(f"TCP 정밀 측정 서버가 {active_config.network_probe_port} 포트에서 시작되었습니다.")
+        else:
+            print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
+    try:
+        create_app(
+            config_path,
+            probe_service=probe_service,
+            measurement_gate=measurement_gate,
+        ).run(
+            host=active_config.host,
+            port=active_config.port,
+            debug=False,
+            threaded=True,
+        )
+    finally:
+        probe_service.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

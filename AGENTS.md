@@ -38,6 +38,9 @@ This is not a general-purpose file transfer service. Keep the scope small.
   handling.
 - `network_sustained.py`: duration-based HTTP measurement sessions, statistics,
   cancellation, and CSV/JSON result persistence.
+- `network_measurement.py`: shared single-measurement gate for HTTP and TCP checks.
+- `network_probe/`: TCP protocol, agent, server, statistics, Windows telemetry,
+  Flask API, and loopback self-check.
 - `templates/` and `static/`: the single-page upload UI and network check mode.
 - `tests/`: deterministic tests for upload, download, deletion, paths, links,
   and CSV behavior.
@@ -49,6 +52,9 @@ This is not a general-purpose file transfer service. Keep the scope small.
 - `data/network_check_session_log.csv`: tracked sustained-check CSV header only.
 - `data/network_check_results/`: tracked README only; operational JSON results
   must remain untracked.
+- `data/network_probe_log.csv`: tracked TCP probe CSV header only.
+- `data/network_probe_results/`: tracked README only; operational TCP result
+  JSON files must remain untracked.
 - `tools/`: Windows Release ZIP build and verification helpers.
 - `.github/workflows/release.yml`: Windows runner workflow that builds and
   uploads the executable ZIP asset.
@@ -59,14 +65,14 @@ Use the narrowest relevant check while developing, then run the full baseline
 before calling work complete.
 
 ```powershell
-python -m compileall app.py network_sustained.py tests
+python -m compileall app.py network_sustained.py network_measurement.py network_probe tests tools
 python -m pytest -q
 ```
 
 On macOS in this workspace, use:
 
 ```bash
-.venv/bin/python -m compileall app.py network_sustained.py tests tools
+.venv/bin/python -m compileall app.py network_sustained.py network_measurement.py network_probe tests tools
 .venv/bin/python -m pytest -q
 ```
 

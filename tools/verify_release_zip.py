@@ -10,6 +10,7 @@ from zipfile import ZipFile
 REQUIRED_FILES = {
     "InternalUpload.exe",
     "start_internal_upload.cmd",
+    "start_tcp_probe_client.cmd",
     "config.ini",
     "README_START_HERE_KO.txt",
     "README.md",
@@ -19,6 +20,8 @@ REQUIRED_FILES = {
     "data/network_check_log.csv",
     "data/network_check_session_log.csv",
     "data/network_check_results/README_RESULTS_KO.txt",
+    "data/network_probe_log.csv",
+    "data/network_probe_results/README_RESULTS_KO.txt",
     "uploads/README_UPLOADS_KO.txt",
 }
 FORBIDDEN_PARTS = {
@@ -80,6 +83,12 @@ def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
             if name.startswith("data/network_check_results/") and name.lower().endswith(".json")
         )
         errors.extend(f"operational result in ZIP: {name}" for name in operational_results)
+        operational_probe_results = sorted(
+            name
+            for name in names
+            if name.startswith("data/network_probe_results/") and name.lower().endswith(".json")
+        )
+        errors.extend(f"operational probe result in ZIP: {name}" for name in operational_probe_results)
         if "data/upload_log.csv" in names:
             errors.extend(
                 validate_csv_header(
@@ -102,6 +111,14 @@ def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
                     archive,
                     "data/network_check_session_log.csv",
                     ["checked_at", "session_id", "client_ip", "direction"],
+                )
+            )
+        if "data/network_probe_log.csv" in names:
+            errors.extend(
+                validate_csv_header(
+                    archive,
+                    "data/network_probe_log.csv",
+                    ["checked_at", "session_id", "agent_id", "agent_hostname", "client_ip", "server_host"],
                 )
             )
         if version and "README_START_HERE_KO.txt" in names:

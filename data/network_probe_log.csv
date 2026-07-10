@@ -1,0 +1,1 @@
+checked_at,session_id,agent_id,agent_hostname,client_ip,server_host,requested_direction,phase,duration_seconds,warmup_seconds,stream_count,sender_bytes,receiver_bytes,sender_mbps,receiver_mbps,median_rtt_ms,min_rtt_ms,cwnd_bytes,retransmitted_bytes,status,error,result_json

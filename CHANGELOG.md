@@ -2,6 +2,29 @@
 
 이 문서는 저장소에 반영된 주요 변경을 사람이 확인하기 위한 기록입니다. GitHub에 push하거나 Release를 준비하기 전에 `README.md`, `RELEASE_NOTES.md`, `CHANGELOG.md`를 함께 점검합니다.
 
+## v0.4.0-rc.1 - 2026-07-10
+
+자체 TCP 정밀 측정:
+
+- 같은 `InternalUpload.exe`를 서버와 대기형 Windows 측정 클라이언트로 실행할 수 있습니다.
+- HTTP 제어 API와 별도 TCP 5201 데이터 연결을 분리했습니다.
+- 업로드·다운로드·전체, 1개·4개 스트림, 3초 워밍업, 10초·30초 측정을 지원합니다.
+- 송신·수신 처리량, 1초 구간 그래프와 Windows TCP_INFO 기반 RTT·CWND·재전송 바이트를 기록합니다.
+- PC 이름과 접속 IP로 에이전트를 구분하고 IP에 결합된 임시 토큰으로 데이터 연결을 검증합니다.
+- 간편·지속·TCP 네트워크 측정을 서버 전체에서 한 번에 하나만 허용합니다.
+- TCP 요약 CSV와 세션별 상세 JSON을 별도 저장합니다.
+
+배포와 검증:
+
+- ZIP에 `start_tcp_probe_client.cmd`, TCP CSV 헤더와 결과 폴더 안내를 추가했습니다.
+- EXE에 `--probe-self-check` loopback 검증을 추가했습니다.
+- GitHub Actions가 `-rc.N` 태그를 prerelease로 만들고 ZIP과 SHA256 파일을 함께 게시합니다.
+- 이 RC는 자동 loopback 검증 대상이며 Windows 두 PC iperf 중앙값 대비 ±10% 실기 검증 후 정식 `v0.4.0`으로 승격합니다.
+
+제외 항목:
+
+- iperf 실행파일·라이브러리·호환 프로토콜, UDP, Android 네이티브 에이전트는 포함하지 않습니다.
+
 ## v0.3.0 - 2026-07-10
 
 HTTP 지속 네트워크 측정:

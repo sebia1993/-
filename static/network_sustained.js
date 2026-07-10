@@ -107,7 +107,7 @@
     const graphSeries = { upload: [], download: [] };
 
     function setMeasurementMode(mode) {
-      if (running || root.dataset.simpleRunning === "true") {
+      if (running || root.dataset.simpleRunning === "true" || root.dataset.probeRunning === "true") {
         return;
       }
       modeButtons.forEach((button) => {
