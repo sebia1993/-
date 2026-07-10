@@ -1,14 +1,39 @@
 from __future__ import annotations
 
-from typing import Any
+import io
+import threading
+from pathlib import Path
+from typing import Any, Callable
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, jsonify, request, send_file, url_for
 
+from .client_package import (
+    ClientPackageError,
+    build_client_package,
+    resolve_client_server_url,
+    runtime_client_executable,
+)
 from .service import ProbeService, ProbeServiceError
 
 
-def create_probe_blueprint(service: ProbeService) -> Blueprint:
+def _default_lan_ip() -> str:
+    return "127.0.0.1"
+
+
+def create_probe_blueprint(
+    service: ProbeService,
+    *,
+    web_port: int = 8000,
+    lan_ip_resolver: Callable[[], str] = _default_lan_ip,
+    client_executable_path: str | Path | None = None,
+) -> Blueprint:
     blueprint = Blueprint("network_probe", __name__, url_prefix="/api/network-probe")
+    package_lock = threading.Lock()
+    executable_path = (
+        Path(client_executable_path).resolve()
+        if client_executable_path is not None
+        else runtime_client_executable()
+    )
 
     def client_ip() -> str:
         return service.normalize_ip(request.remote_addr)
@@ -26,9 +51,70 @@ def create_probe_blueprint(service: ProbeService) -> Blueprint:
         value = request.get_json(silent=True)
         return value if isinstance(value, dict) else {}
 
+    def package_context() -> tuple[Path, str]:
+        status_value = service.status_payload()
+        if not status_value["enabled"]:
+            raise ProbeServiceError("TCP 정밀 측정이 비활성화되어 있어 클라이언트 ZIP을 제공할 수 없습니다.", 503)
+        if not status_value["available"]:
+            raise ProbeServiceError(
+                str(status_value.get("error") or "TCP 정밀 측정 서버를 사용할 수 없습니다."),
+                503,
+            )
+        if executable_path is None:
+            raise ProbeServiceError("Windows Release EXE로 실행할 때만 클라이언트 ZIP을 받을 수 있습니다.", 503)
+        if not executable_path.is_file():
+            raise ProbeServiceError("Windows 클라이언트 실행 파일을 찾을 수 없습니다.", 503)
+        try:
+            server_url = resolve_client_server_url(
+                request.host,
+                fallback_host=lan_ip_resolver(),
+                fallback_port=web_port,
+                scheme=request.scheme,
+            )
+        except ClientPackageError as exc:
+            raise ProbeServiceError(str(exc), 400) from exc
+        return executable_path, server_url
+
     @blueprint.get("/status")
     def status():
-        return jsonify(service.status_payload())
+        value = service.status_payload()
+        value.update(
+            {
+                "client_package_available": False,
+                "client_package_error": "",
+                "client_package_server_url": "",
+                "client_package_url": url_for("network_probe.client_package"),
+            }
+        )
+        try:
+            _, server_url = package_context()
+            value["client_package_available"] = True
+            value["client_package_server_url"] = server_url
+        except ProbeServiceError as exc:
+            value["client_package_error"] = str(exc)
+        return jsonify(value)
+
+    @blueprint.get("/client-package.zip")
+    def client_package():
+        try:
+            package_executable, server_url = package_context()
+            with package_lock:
+                package = build_client_package(package_executable, server_url)
+        except ProbeServiceError as exc:
+            return error_response(exc)
+        except ClientPackageError as exc:
+            return jsonify({"error": str(exc)}), 500
+        response = send_file(
+            io.BytesIO(package.payload),
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=package.download_name,
+            max_age=0,
+            conditional=False,
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @blueprint.get("/agents")
     def agents():

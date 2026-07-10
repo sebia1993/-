@@ -390,6 +390,7 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
             REQUIRED_FILES
             - {
                 "README_START_HERE_KO.txt",
+                "start_tcp_probe_client.cmd",
                 "data/upload_log.csv",
                 "data/network_check_log.csv",
                 "data/network_check_session_log.csv",
@@ -398,6 +399,10 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
         ):
             archive.writestr(name, "sample")
         archive.writestr("README_START_HERE_KO.txt", "사내 업로드 v0.1.0 Windows 실행 ZIP")
+        archive.writestr(
+            "start_tcp_probe_client.cmd",
+            'set /p "SERVER_URL=server: "\nInternalUpload.exe --probe-client --server "%SERVER_URL%"',
+        )
         archive.writestr("data/upload_log.csv", csv_header)
         archive.writestr("data/network_check_log.csv", network_csv_header)
         archive.writestr("data/network_check_session_log.csv", session_csv_header)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import socket
 import uuid
+from zipfile import ZipFile
 
 from app import build_probe_config, create_app, load_config, normalize_ip
 from network_measurement import NetworkMeasurementGate
@@ -60,9 +62,15 @@ def test_disabled_probe_api_and_ui_are_available(tmp_path):
 
     assert status.status_code == 200
     assert status.get_json()["enabled"] is False
+    assert status.get_json()["client_package_available"] is False
     assert registration.status_code == 503
-    assert "TCP 정밀 측정" in index.get_data(as_text=True)
-    assert "network_probe.js" in index.get_data(as_text=True)
+    package = client.get("/api/network-probe/client-package.zip")
+    assert package.status_code == 503
+    index_text = index.get_data(as_text=True)
+    assert "TCP 정밀 측정" in index_text
+    assert "Windows 클라이언트 ZIP 받기" in index_text
+    assert 'data-probe-client-package-url="/api/network-probe/client-package.zip"' in index_text
+    assert "network_probe.js" in index_text
 
 
 def test_probe_api_registers_agent_and_shares_measurement_gate(tmp_path):
@@ -91,6 +99,9 @@ def test_probe_api_registers_agent_and_shares_measurement_gate(tmp_path):
         assert registration.status_code == 200
         token = registration.get_json()["agent_token"]
         assert client.get("/api/network-probe/agents").get_json()["agents"][0]["hostname"] == "TEST-PC"
+        status = client.get("/api/network-probe/status").get_json()
+        assert status["client_package_available"] is False
+        assert "Release EXE" in status["client_package_error"]
 
         created = client.post(
             "/api/network-probe/sessions",
@@ -123,5 +134,81 @@ def test_probe_api_registers_agent_and_shares_measurement_gate(tmp_path):
         cancelled = client.post(f"/api/network-probe/sessions/{session_id}/cancel")
         assert cancelled.get_json()["status"] == "cancelled"
         assert gate.is_available() is True
+    finally:
+        service.stop()
+
+
+def test_probe_client_package_download_embeds_current_server_address(tmp_path):
+    config_path = write_config(tmp_path, enabled=True)
+    app_config = load_config(config_path)
+    gate = NetworkMeasurementGate()
+    service = ProbeService(
+        config=build_probe_config(app_config),
+        measurement_gate=gate,
+        normalize_ip=normalize_ip,
+    )
+    executable = tmp_path / "InternalUpload.exe"
+    executable.write_bytes(b"MZ-api-client-test")
+    assert service.start() is True
+    try:
+        app = create_app(
+            config_path,
+            probe_service=service,
+            measurement_gate=gate,
+            probe_client_executable_path=executable,
+        )
+        client = app.test_client()
+        headers = {"Host": "SERVER-PC:8123"}
+
+        status = client.get("/api/network-probe/status", headers=headers)
+        package = client.get("/api/network-probe/client-package.zip", headers=headers)
+
+        status_payload = status.get_json()
+        assert status_payload["client_package_available"] is True
+        assert status_payload["client_package_server_url"] == "http://server-pc:8123"
+        assert status_payload["client_package_url"] == "/api/network-probe/client-package.zip"
+        assert package.status_code == 200
+        assert package.mimetype == "application/zip"
+        assert package.headers["Cache-Control"] == "no-store"
+        assert "internal-upload-client_server-pc.zip" in package.headers["Content-Disposition"]
+        with ZipFile(io.BytesIO(package.data)) as archive:
+            command = archive.read(
+                "InternalUpload_Client_server-pc/start_tcp_probe_client.cmd"
+            ).decode("utf-8-sig")
+        assert '--server "http://server-pc:8123"' in command
+        assert "set /p" not in command.lower()
+
+        rejected = client.get(
+            "/api/network-probe/client-package.zip",
+            headers={"Host": "server-pc&calc:8000"},
+        )
+        assert rejected.status_code == 400
+    finally:
+        service.stop()
+
+
+def test_probe_client_package_rejects_missing_executable(tmp_path):
+    config_path = write_config(tmp_path, enabled=True)
+    app_config = load_config(config_path)
+    gate = NetworkMeasurementGate()
+    service = ProbeService(
+        config=build_probe_config(app_config),
+        measurement_gate=gate,
+        normalize_ip=normalize_ip,
+    )
+    assert service.start() is True
+    try:
+        app = create_app(
+            config_path,
+            probe_service=service,
+            measurement_gate=gate,
+            probe_client_executable_path=tmp_path / "missing.exe",
+        )
+        response = app.test_client().get(
+            "/api/network-probe/client-package.zip",
+            headers={"Host": "server-pc:8000"},
+        )
+        assert response.status_code == 503
+        assert "실행 파일" in response.get_json()["error"]
     finally:
         service.stop()

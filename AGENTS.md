@@ -40,7 +40,7 @@ This is not a general-purpose file transfer service. Keep the scope small.
   cancellation, and CSV/JSON result persistence.
 - `network_measurement.py`: shared single-measurement gate for HTTP and TCP checks.
 - `network_probe/`: TCP protocol, agent, server, statistics, Windows telemetry,
-  Flask API, and loopback self-check.
+  generated client ZIP, Flask API, and loopback self-check.
 - `templates/` and `static/`: the single-page upload UI and network check mode.
 - `tests/`: deterministic tests for upload, download, deletion, paths, links,
   and CSV behavior.

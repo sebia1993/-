@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import socket
+import tempfile
 import threading
+from pathlib import Path
 
+from .client_package import build_client_package, verify_client_package
 from .tcp_engine import aggregate_stream_results, run_receiver_stream, run_sender_stream
 
 
@@ -65,10 +68,28 @@ def _run_direction() -> tuple[dict, dict]:
     return results["sender"], results["receiver"]
 
 
-def run_probe_self_check() -> int:
+def _run_client_package_check(executable_path: Path | None) -> None:
+    if executable_path is not None:
+        package = build_client_package(executable_path, "http://127.0.0.1:8000")
+        errors = verify_client_package(package.payload, package.server_url)
+        if errors:
+            raise RuntimeError(errors[0])
+        return
+
+    with tempfile.TemporaryDirectory() as directory:
+        placeholder = Path(directory) / "InternalUpload.exe"
+        placeholder.write_bytes(b"MZ-probe-self-check")
+        package = build_client_package(placeholder, "http://127.0.0.1:8000")
+        errors = verify_client_package(package.payload, package.server_url)
+        if errors:
+            raise RuntimeError(errors[0])
+
+
+def run_probe_self_check(executable_path: Path | None = None) -> int:
     try:
         first_sender, first_receiver = _run_direction()
         second_sender, second_receiver = _run_direction()
+        _run_client_package_check(executable_path)
     except Exception as exc:
         print(f"TCP probe self-check failed: {exc}")
         return 1

@@ -70,6 +70,16 @@ def validate_csv_header(zip_file: ZipFile, name: str, expected_prefix: list[str]
     return []
 
 
+def validate_manual_probe_launcher(zip_file: ZipFile) -> list[str]:
+    command = zip_file.read("start_tcp_probe_client.cmd").decode("utf-8-sig")
+    errors = []
+    if "--probe-client --server" not in command:
+        errors.append("start_tcp_probe_client.cmd does not start probe client mode")
+    if "set /p" not in command.lower():
+        errors.append("start_tcp_probe_client.cmd must remain the manual address fallback")
+    return errors
+
+
 def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
     errors = []
     with ZipFile(zip_path) as archive:
@@ -125,6 +135,8 @@ def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
             readme = archive.read("README_START_HERE_KO.txt").decode("utf-8-sig")
             if version not in readme:
                 errors.append(f"README_START_HERE_KO.txt does not mention {version}")
+        if "start_tcp_probe_client.cmd" in names:
+            errors.extend(validate_manual_probe_launcher(archive))
     return errors
 
 

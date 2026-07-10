@@ -223,6 +223,28 @@ select:disabled {
   margin: 0 0 14px;
 }
 
+.probe-client-package {
+  margin: 0 0 16px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.probe-client-package .secondary {
+  width: 100%;
+}
+
+.probe-client-package .secondary.is-disabled {
+  pointer-events: none;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.probe-client-package p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
 .link-box {
   margin-top: 12px;
 }

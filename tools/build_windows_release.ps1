@@ -113,8 +113,13 @@ pause
 TCP 정밀 측정:
 1. 서버 config.ini의 [network_probe] ENABLED=true를 설정합니다.
 2. 서버 PC 방화벽에서 TCP 5201 포트를 허용합니다.
-3. 측정 대상 PC에서 start_tcp_probe_client.cmd를 실행합니다.
-4. 웹 화면의 TCP 정밀 측정에서 PC 이름과 IP를 선택합니다.
+3. 서버를 다시 시작하고 웹 화면의 TCP 정밀 측정에서 Windows 클라이언트 ZIP을 받습니다.
+4. 측정 대상 PC에서 받은 ZIP을 완전히 해제하고 start_tcp_probe_client.cmd를 실행합니다.
+5. 웹 화면에서 자동 등록된 PC 이름과 IP를 선택합니다.
+6. 서버 IP 또는 웹 포트가 바뀌면 클라이언트 ZIP을 다시 받습니다.
+
+수동 연결:
+- 웹에서 클라이언트 ZIP을 받을 수 없으면 이 전체 ZIP의 start_tcp_probe_client.cmd를 측정 PC에서 실행하고 서버 주소를 직접 입력합니다.
 
 설정:
 - config.ini에서 PORT, BASE_URL, STORAGE_ROOT, DELETE_ALLOWED_IPS와 TCP 측정 포트를 수정할 수 있습니다.
@@ -170,6 +175,8 @@ TCP 정밀 측정:
 - 1개/4개 HTTP 연결, 1초 구간 그래프, HTTP 응답시간, 취소 지원
 - ``data/network_check_session_log.csv`` 요약과 세션별 JSON 상세 결과
 - 별도 설치 없이 같은 ``InternalUpload.exe``를 사용하는 TCP 측정 클라이언트 모드
+- 웹 화면에서 현재 서버 주소를 자동 포함한 최소 Windows 클라이언트 ZIP 다운로드
+- localhost 접속 시 사내 IPv4 자동 대체와 안전한 Host 값 검증
 - TCP 업로드/다운로드/전체, 1개/4개 스트림, 3초 워밍업, 10초/30초 측정
 - Windows TCP_INFO 기반 RTT, 최소 RTT, 혼잡 윈도우, 재전송 바이트 표시
 - ``data/network_probe_log.csv`` 요약과 세션별 JSON 상세 결과
@@ -180,6 +187,7 @@ TCP 정밀 측정:
 - ``python -m pytest -q`` 통과
 - ``InternalUpload.exe --smoke-check`` 통과
 - ``InternalUpload.exe --probe-self-check`` 통과
+- 실행 중인 EXE 기반 자동 연결 클라이언트 ZIP 구조 검증 통과
 - Windows ZIP 구조 검증 통과
 
 ## 제한사항

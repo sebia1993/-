@@ -33,6 +33,8 @@
     if (!root || !root.dataset.probeStatusUrl) return;
 
     const serviceStatus = root.querySelector("[data-probe-service-status]");
+    const packageLink = root.querySelector("[data-probe-client-package]");
+    const packageAddress = root.querySelector("[data-probe-client-package-address]");
     const agentSelect = root.querySelector("[data-probe-agent]");
     const durationSelect = root.querySelector("[data-probe-duration]");
     const streamButtons = root.querySelectorAll("[data-probe-stream]");
@@ -98,6 +100,16 @@
       } else {
         serviceStatus.textContent = `TCP 측정 서버 정상 · 포트 ${payload.port}`;
       }
+      const packageAvailable = Boolean(payload.client_package_available);
+      packageLink.setAttribute("aria-disabled", packageAvailable ? "false" : "true");
+      packageLink.classList.toggle("is-disabled", !packageAvailable);
+      if (packageAvailable) {
+        packageLink.href = payload.client_package_url || root.dataset.probeClientPackageUrl;
+        packageAddress.textContent = `자동 연결 주소 · ${payload.client_package_server_url}`;
+      } else {
+        packageLink.removeAttribute("href");
+        packageAddress.textContent = payload.client_package_error || "Windows 클라이언트 ZIP을 사용할 수 없습니다.";
+      }
       setControlsEnabled();
     }
 
@@ -132,6 +144,10 @@
         serviceStatus.classList.remove("success");
         serviceStatus.classList.add("warning");
         serviceStatus.textContent = error.message;
+        packageLink.removeAttribute("href");
+        packageLink.setAttribute("aria-disabled", "true");
+        packageLink.classList.add("is-disabled");
+        packageAddress.textContent = error.message;
         setControlsEnabled();
       }
     }
@@ -305,6 +321,9 @@
     });
     actionButtons.forEach((button) => button.addEventListener("click", () => startMeasurement(button.dataset.probeAction)));
     agentSelect.addEventListener("change", setControlsEnabled);
+    packageLink.addEventListener("click", (event) => {
+      if (packageLink.getAttribute("aria-disabled") === "true") event.preventDefault();
+    });
     cancelButton.addEventListener("click", cancelMeasurement);
     window.addEventListener("resize", drawChart);
     window.setInterval(() => { if (!running) refreshAgents(); }, 3000);

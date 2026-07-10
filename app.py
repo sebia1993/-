@@ -439,6 +439,7 @@ def create_app(
     *,
     probe_service: ProbeService | None = None,
     measurement_gate: NetworkMeasurementGate | None = None,
+    probe_client_executable_path: str | os.PathLike[str] | None = None,
 ) -> Flask:
     app = Flask(
         __name__,
@@ -462,7 +463,14 @@ def create_app(
         measurement_gate=active_gate,
     )
     app.register_blueprint(sustained_blueprint)
-    app.register_blueprint(create_probe_blueprint(active_probe_service))
+    app.register_blueprint(
+        create_probe_blueprint(
+            active_probe_service,
+            web_port=config.port,
+            lan_ip_resolver=detect_lan_ip,
+            client_executable_path=probe_client_executable_path,
+        )
+    )
     app.extensions["sustained_network_check"] = sustained_manager
     app.extensions["network_measurement_gate"] = active_gate
     app.extensions["network_probe"] = active_probe_service
@@ -884,9 +892,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"TCP 측정 클라이언트 실행 실패: {exc}", file=sys.stderr)
             return 2
     if args.probe_self_check:
+        from network_probe.client_package import runtime_client_executable
         from network_probe.self_check import run_probe_self_check
 
-        return run_probe_self_check()
+        return run_probe_self_check(runtime_client_executable())
 
     active_config = load_config(config_path)
     ensure_directories(active_config)
