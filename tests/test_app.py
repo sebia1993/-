@@ -209,6 +209,9 @@ def test_network_check_tab_and_size_options(app_client):
     assert "지속 측정" in body
     assert "HTTP 응답시간" in body
     assert "data-sustained-action" in body
+    assert "Excel 결과 받기" in body
+    assert "data-sustained-excel" in body
+    assert "data-sustained-json" not in body
     assert "/network-check/upload" in body
     assert "/network-check/download" in body
 
@@ -358,6 +361,9 @@ def test_sustained_network_js_uses_regular_post_chunks():
     assert "data-sustained-action" in script
     assert "latency_samples_ms" in script
     assert "window.confirm" in script
+    assert "data-sustained-excel" in script
+    assert "result.excel_url" in script
+    assert "data-sustained-json" not in script
 
 
 def test_windows_release_checksum_uses_portable_lf_line_ending():

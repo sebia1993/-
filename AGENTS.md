@@ -38,6 +38,8 @@ This is not a general-purpose file transfer service. Keep the scope small.
   handling.
 - `network_sustained.py`: duration-based HTTP measurement sessions, statistics,
   cancellation, and CSV/JSON result persistence.
+- `sustained_excel.py`: in-memory Excel workbook generation for saved sustained
+  HTTP measurement results.
 - `network_measurement.py`: shared single-measurement gate for HTTP and TCP checks.
 - `network_probe/`: TCP protocol, agent, server, statistics, Windows telemetry,
   generated client ZIP, Flask API, and loopback self-check.
@@ -65,14 +67,14 @@ Use the narrowest relevant check while developing, then run the full baseline
 before calling work complete.
 
 ```powershell
-python -m compileall app.py startup_ports.py network_sustained.py network_measurement.py network_probe tests tools
+python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools
 python -m pytest -q
 ```
 
 On macOS in this workspace, use:
 
 ```bash
-.venv/bin/python -m compileall app.py startup_ports.py network_sustained.py network_measurement.py network_probe tests tools
+.venv/bin/python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools
 .venv/bin/python -m pytest -q
 ```
 

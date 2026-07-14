@@ -9,12 +9,19 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
 
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 
 from network_measurement import NetworkMeasurementGate
+from sustained_excel import (
+    EXCEL_MIME_TYPE,
+    SustainedExcelError,
+    build_sustained_excel,
+    build_sustained_excel_filename,
+)
 
 
 SUSTAINED_LOG_FIELDS = [
@@ -316,18 +323,29 @@ class SustainedCheckManager:
                 if self.measurement_gate is not None:
                     self.measurement_gate.release("http_sustained", session.session_id)
 
-    def result_path_for(self, session_id: str, client_ip: str) -> Path:
+    def _result_path(self, session_id: str) -> Path:
         if not session_id or any(character not in "0123456789abcdef" for character in session_id) or len(session_id) != 32:
             raise SustainedCheckError("측정 결과를 찾을 수 없습니다.", 404)
         result_path = self.results_root / f"{session_id}.json"
         if not result_path.exists() or not result_path.is_file():
             raise SustainedCheckError("측정 결과를 찾을 수 없습니다.", 404)
+        return result_path
+
+    def saved_result_for(self, session_id: str, client_ip: str) -> dict[str, Any]:
+        result_path = self._result_path(session_id)
         try:
             saved = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise SustainedCheckError("측정 결과 파일을 읽을 수 없습니다.", 500) from exc
+        if not isinstance(saved, dict):
+            raise SustainedCheckError("측정 결과 파일 형식이 올바르지 않습니다.", 500)
         if saved.get("client_ip") != client_ip:
             raise SustainedCheckError("이 측정 결과는 다른 IP에서 받을 수 없습니다.", 403)
+        return saved
+
+    def result_path_for(self, session_id: str, client_ip: str) -> Path:
+        result_path = self._result_path(session_id)
+        self.saved_result_for(session_id, client_ip)
         return result_path
 
     def _build_result(self, session: SustainedSession, payload: dict[str, Any], *, status: str) -> dict[str, Any]:
@@ -377,6 +395,7 @@ class SustainedCheckManager:
             "status": status,
             "error": error,
             "result_url": f"/network-check/sustained/results/{session.session_id}.json",
+            "excel_url": f"/network-check/sustained/results/{session.session_id}.xlsx",
         }
 
     @staticmethod
@@ -608,5 +627,26 @@ def create_sustained_blueprint(
             mimetype="application/json",
             headers={"Content-Disposition": f'attachment; filename="network-check-{session_id}.json"'},
         )
+
+    @blueprint.get("/network-check/sustained/results/<session_id>.xlsx")
+    def result_excel(session_id: str):
+        try:
+            saved_result = manager.saved_result_for(session_id, client_ip())
+            excel_payload = build_sustained_excel(saved_result)
+        except SustainedCheckError as exc:
+            return error_response(exc)
+        except SustainedExcelError as exc:
+            return jsonify({"error": str(exc)}), 500
+
+        response = send_file(
+            BytesIO(excel_payload),
+            mimetype=EXCEL_MIME_TYPE,
+            as_attachment=True,
+            download_name=build_sustained_excel_filename(saved_result),
+            max_age=0,
+        )
+        response.headers["Cache-Control"] = "no-store, no-cache, max-age=0"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     return blueprint, manager

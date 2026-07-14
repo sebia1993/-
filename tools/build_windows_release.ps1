@@ -183,7 +183,8 @@ TCP 정밀 측정:
 - ``data/network_check_log.csv`` 기반 네트워크 체크 기록
 - 3초 워밍 후 10초/30초를 측정하는 HTTP 지속 측정
 - 1개/4개 HTTP 연결, 1초 구간 그래프, HTTP 응답시간, 취소 지원
-- ``data/network_check_session_log.csv`` 요약과 세션별 JSON 상세 결과
+- 성공·실패·취소 상태, 방향별 요약과 1초 선 그래프를 담은 Excel 결과 다운로드
+- ``data/network_check_session_log.csv`` 요약과 세션별 JSON 원본 보존, 요청 시 메모리에서 Excel 생성
 - 별도 설치 없이 같은 ``InternalUpload.exe``를 사용하는 TCP 측정 클라이언트 모드
 - 웹 화면에서 현재 서버 주소를 자동 포함한 최소 Windows 클라이언트 ZIP 다운로드
 - localhost 접속 시 사내 IPv4 자동 대체와 안전한 Host 값 검증
@@ -193,7 +194,7 @@ TCP 정밀 측정:
 
 ## 검증
 
-- ``python -m compileall app.py startup_ports.py network_sustained.py network_measurement.py network_probe tests tools`` 통과
+- ``python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools`` 통과
 - ``python -m pytest -q`` 통과
 - ``InternalUpload.exe --smoke-check`` 통과
 - ``InternalUpload.exe --probe-self-check`` 통과

@@ -94,7 +94,7 @@
     const medianText = root.querySelector("[data-sustained-median]");
     const variabilityText = root.querySelector("[data-sustained-variability]");
     const resultList = root.querySelector("[data-sustained-result-list]");
-    const jsonLink = root.querySelector("[data-sustained-json]");
+    const excelLink = root.querySelector("[data-sustained-excel]");
     const chart = root.querySelector("[data-sustained-chart]");
 
     let selectedStreams = 1;
@@ -154,8 +154,8 @@
       medianText.textContent = "-";
       variabilityText.textContent = "-";
       resultList.innerHTML = "";
-      jsonLink.hidden = true;
-      jsonLink.removeAttribute("href");
+      excelLink.hidden = true;
+      excelLink.removeAttribute("href");
       latencySamples = [];
       clientResults = {};
       graphSeries.upload = [];
@@ -416,10 +416,10 @@
       ) {
         latencyText.textContent = `${Number(result.http_latency.median_ms).toFixed(2)} ms`;
       }
-      if (result.result_url) {
-        jsonLink.href = new URL(result.result_url, window.location.href).toString();
-        jsonLink.hidden = false;
-        jsonLink.setAttribute("download", "");
+      if (result.excel_url) {
+        excelLink.href = new URL(result.excel_url, window.location.href).toString();
+        excelLink.hidden = false;
+        excelLink.setAttribute("download", "");
       }
       progressBar.style.width = "100%";
       drawChart();
