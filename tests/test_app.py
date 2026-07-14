@@ -385,6 +385,16 @@ def test_smoke_check_returns_success(tmp_path):
     assert run_smoke_check(config_path) == 0
 
 
+def test_health_endpoint_identifies_app_and_active_port(app_client):
+    client, _, _ = app_client
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json == {"app": "internal-upload", "status": "ok", "port": 8000}
+    assert response.headers["Cache-Control"] == "no-store"
+
+
 def test_release_zip_verifier_accepts_expected_structure(tmp_path):
     zip_path = tmp_path / "internal-upload_v0.1.0_windows.zip"
     csv_header = (
@@ -399,6 +409,7 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
             REQUIRED_FILES
             - {
                 "README_START_HERE_KO.txt",
+                "start_internal_upload.cmd",
                 "start_tcp_probe_client.cmd",
                 "data/upload_log.csv",
                 "data/network_check_log.csv",
@@ -408,6 +419,10 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
         ):
             archive.writestr(name, "sample")
         archive.writestr("README_START_HERE_KO.txt", "사내 업로드 v0.1.0 Windows 실행 ZIP")
+        archive.writestr(
+            "start_internal_upload.cmd",
+            "실제 접속 주소를 표시하고 config.ini에 저장합니다.\nInternalUpload.exe",
+        )
         archive.writestr(
             "start_tcp_probe_client.cmd",
             'set /p "SERVER_URL=server: "\nInternalUpload.exe --probe-client --server "%SERVER_URL%"',

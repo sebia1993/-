@@ -11,12 +11,13 @@ import threading
 import time
 import uuid
 from configparser import ConfigParser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import quote, urlparse
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
+from werkzeug.serving import make_server
 
 from network_sustained import create_sustained_blueprint, ensure_sustained_storage
 from network_measurement import NetworkMeasurementGate
@@ -24,6 +25,19 @@ from network_probe.agent import ProbeClientError, run_probe_client
 from network_probe.models import ProbeConfig
 from network_probe.routes import create_probe_blueprint
 from network_probe.service import ProbeService, ensure_probe_storage
+from startup_ports import (
+    APP_ID,
+    FIREWALL_ALLOWED,
+    FIREWALL_NOT_APPLICABLE,
+    PortChangeDeclined,
+    StartupPortError,
+    check_windows_firewall_port,
+    firewall_add_command,
+    is_existing_instance,
+    persist_port_change,
+    resolve_startup_port,
+    rewrite_base_url_port,
+)
 
 
 def get_runtime_root() -> Path:
@@ -437,6 +451,7 @@ def read_network_check_log(config: AppConfig, limit: int | None = None) -> list[
 def create_app(
     config_path: str | os.PathLike[str] | None = None,
     *,
+    app_config: AppConfig | None = None,
     probe_service: ProbeService | None = None,
     measurement_gate: NetworkMeasurementGate | None = None,
     probe_client_executable_path: str | os.PathLike[str] | None = None,
@@ -446,7 +461,7 @@ def create_app(
         template_folder=str(RESOURCE_ROOT / "templates"),
         static_folder=str(RESOURCE_ROOT / "static"),
     )
-    config = load_config(config_path)
+    config = app_config or load_config(config_path)
     ensure_directories(config)
     active_gate = measurement_gate or NetworkMeasurementGate()
     active_probe_service = probe_service or ProbeService(
@@ -474,6 +489,12 @@ def create_app(
     app.extensions["sustained_network_check"] = sustained_manager
     app.extensions["network_measurement_gate"] = active_gate
     app.extensions["network_probe"] = active_probe_service
+
+    @app.get("/api/health")
+    def health_check():
+        response = jsonify({"app": APP_ID, "status": "ok", "port": config.port})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     def finalize_upload_session(
         session: NetworkCheckUploadSession,
@@ -871,6 +892,34 @@ def run_smoke_check(config_path: str | os.PathLike[str] | None = None) -> int:
     return 0
 
 
+def print_server_addresses(config: AppConfig, *, existing: bool = False) -> None:
+    label = "이미 실행 중인 서버" if existing else "사내 업로드 서버"
+    print(f"{label} 주소:")
+    if config.host in {"0.0.0.0", "127.0.0.1", "localhost"}:
+        print(f"  http://127.0.0.1:{config.port}")
+    if config.host == "0.0.0.0":
+        lan_ip = detect_lan_ip()
+        if lan_ip != "127.0.0.1":
+            print(f"  http://{lan_ip}:{config.port}")
+    elif config.host not in {"127.0.0.1", "localhost"}:
+        print(f"  http://{config.host}:{config.port}")
+
+
+def print_firewall_status(port: int) -> None:
+    status = check_windows_firewall_port(port)
+    if status == FIREWALL_NOT_APPLICABLE:
+        return
+    if status == FIREWALL_ALLOWED:
+        print(f"Windows 방화벽에서 TCP {port} 인바운드 허용 규칙을 확인했습니다.")
+        return
+    print(
+        f"Windows 방화벽에서 TCP {port} 허용 규칙을 확인하지 못했습니다.",
+        file=sys.stderr,
+    )
+    print("다른 PC에서 접속할 수 없다면 관리자 터미널에서 다음 명령을 실행하세요:")
+    print(f"  {firewall_add_command(port)}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="사내 업로드 서버 및 TCP 측정 클라이언트")
     parser.add_argument("--smoke-check", action="store_true")
@@ -897,35 +946,110 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_probe_self_check(runtime_client_executable())
 
-    active_config = load_config(config_path)
-    ensure_directories(active_config)
+    configured = load_config(config_path)
+    ensure_directories(configured)
+    try:
+        resolution = resolve_startup_port(
+            configured.host,
+            configured.port,
+            excluded_ports={configured.network_probe_port},
+            existing_instance_check=lambda port: is_existing_instance(
+                port,
+                host=configured.host,
+            ),
+        )
+    except PortChangeDeclined as exc:
+        print(exc)
+        return 0
+    except StartupPortError as exc:
+        print(f"사내 업로드 서버 시작 실패: {exc}", file=sys.stderr)
+        return 2
+
+    if resolution.existing_instance:
+        print_server_addresses(configured, existing=True)
+        print("중복 서버를 시작하지 않고 종료합니다.")
+        return 0
+
+    runtime_base_url, _ = rewrite_base_url_port(
+        configured.base_url,
+        configured.port,
+        resolution.selected_port,
+    )
+    active_config = replace(
+        configured,
+        port=resolution.selected_port,
+        base_url=runtime_base_url.rstrip("/"),
+    )
     measurement_gate = NetworkMeasurementGate()
     probe_service = ProbeService(
         config=build_probe_config(active_config),
         measurement_gate=measurement_gate,
         normalize_ip=normalize_ip,
     )
-    if active_config.network_probe_enabled:
-        if active_config.network_probe_port == active_config.port:
-            probe_service.start_error = "웹 포트와 TCP 측정 포트는 서로 달라야 합니다."
-            print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
-        elif probe_service.start():
-            print(f"TCP 정밀 측정 서버가 {active_config.network_probe_port} 포트에서 시작되었습니다.")
-        else:
-            print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
+    web_server = None
     try:
-        create_app(
+        flask_app = create_app(
             config_path,
+            app_config=active_config,
             probe_service=probe_service,
             measurement_gate=measurement_gate,
-        ).run(
-            host=active_config.host,
-            port=active_config.port,
-            debug=False,
-            threaded=True,
         )
+        try:
+            web_server = make_server(
+                active_config.host,
+                active_config.port,
+                flask_app,
+                threaded=True,
+            )
+        except (OSError, SystemExit) as exc:
+            print(
+                f"사내 업로드 서버가 TCP {active_config.port} 포트를 열지 못했습니다: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+
+        if resolution.changed:
+            resolved_config_path = (
+                Path(config_path).resolve() if config_path else APP_ROOT / "config.ini"
+            )
+            try:
+                update_result = persist_port_change(
+                    resolved_config_path,
+                    resolution.configured_port,
+                    resolution.selected_port,
+                )
+            except OSError as exc:
+                print(f"변경된 웹 포트를 config.ini에 저장하지 못했습니다: {exc}", file=sys.stderr)
+                return 2
+            print(
+                f"웹 포트를 {resolution.configured_port}에서 "
+                f"{resolution.selected_port}(으)로 변경하고 config.ini에 저장했습니다."
+            )
+            if update_result.base_url_changed:
+                print("BASE_URL의 웹 포트도 새 포트로 변경했습니다.")
+            if update_result.warning:
+                print(f"주의: {update_result.warning}", file=sys.stderr)
+            print_firewall_status(active_config.port)
+
+        if active_config.network_probe_enabled:
+            if active_config.network_probe_port == active_config.port:
+                probe_service.start_error = "웹 포트와 TCP 측정 포트는 서로 달라야 합니다."
+                print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
+            elif probe_service.start():
+                print(f"TCP 정밀 측정 서버가 {active_config.network_probe_port} 포트에서 시작되었습니다.")
+            else:
+                print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
+
+        print_server_addresses(active_config)
+        print("종료하려면 Ctrl+C를 누르세요.")
+        try:
+            web_server.serve_forever()
+        except KeyboardInterrupt:
+            print("사내 업로드 서버를 종료합니다.")
     finally:
         probe_service.stop()
+        if web_server is not None:
+            web_server.server_close()
     return 0
 
 

@@ -1,0 +1,360 @@
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+from configparser import ConfigParser, SectionProxy
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+from urllib.parse import SplitResult, urlsplit, urlunsplit
+
+
+APP_ID = "internal-upload"
+APP_SECTION = "app"
+PROBE_SECTION = "network_probe"
+PORT_SEARCH_LIMIT = 99
+DEFAULT_APP_SETTINGS = {
+    "HOST": "0.0.0.0",
+    "PORT": "8000",
+    "BASE_URL": "",
+    "STORAGE_ROOT": "uploads",
+    "DELETE_ALLOWED_IPS": "127.0.0.1,::1",
+    "RECENT_LIMIT": "50",
+}
+DEFAULT_PROBE_SETTINGS = {
+    "ENABLED": "false",
+    "PORT": "5201",
+}
+
+FIREWALL_ALLOWED = "allowed"
+FIREWALL_NOT_FOUND = "not_found"
+FIREWALL_UNKNOWN = "unknown"
+FIREWALL_NOT_APPLICABLE = "not_applicable"
+
+
+class StartupPortError(RuntimeError):
+    pass
+
+
+class PortChangeDeclined(StartupPortError):
+    pass
+
+
+@dataclass(frozen=True)
+class PortResolution:
+    configured_port: int
+    selected_port: int
+    existing_instance: bool = False
+
+    @property
+    def changed(self) -> bool:
+        return self.configured_port != self.selected_port
+
+
+@dataclass(frozen=True)
+class ConfigUpdateResult:
+    base_url_changed: bool
+    warning: str = ""
+
+
+def is_port_available(host: str, port: int) -> bool:
+    if not 1 <= port <= 65535:
+        return False
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        sock.bind((host, port))
+    except OSError:
+        return False
+    finally:
+        sock.close()
+    return True
+
+
+def is_existing_instance(
+    port: int,
+    timeout_seconds: float = 0.5,
+    *,
+    host: str = "127.0.0.1",
+) -> bool:
+    target_host = "127.0.0.1" if host == "0.0.0.0" else host
+    connection = http.client.HTTPConnection(target_host, port, timeout=timeout_seconds)
+    try:
+        connection.request("GET", "/api/health", headers={"Accept": "application/json"})
+        response = connection.getresponse()
+        if response.status != 200:
+            return False
+        payload = json.loads(response.read(4097).decode("utf-8"))
+        return (
+            payload.get("app") == APP_ID
+            and payload.get("status") == "ok"
+            and payload.get("port") == port
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    finally:
+        connection.close()
+
+
+def find_available_port(
+    host: str,
+    configured_port: int,
+    *,
+    excluded_ports: set[int] | frozenset[int] | None = None,
+    search_limit: int = PORT_SEARCH_LIMIT,
+    availability_check: Callable[[str, int], bool] = is_port_available,
+) -> int | None:
+    excluded = excluded_ports or set()
+    upper_port = min(65535, configured_port + max(0, search_limit))
+    for candidate in range(configured_port + 1, upper_port + 1):
+        if candidate in excluded:
+            continue
+        if availability_check(host, candidate):
+            return candidate
+    return None
+
+
+def prompt_for_port_change(
+    configured_port: int,
+    selected_port: int,
+    *,
+    input_func: Callable[[str], str] | None = None,
+    output_func: Callable[[str], None] = print,
+    interactive: bool | None = None,
+) -> bool:
+    if input_func is None:
+        if interactive is None:
+            interactive = bool(sys.stdin and sys.stdin.isatty())
+        if not interactive:
+            output_func("입력할 수 없는 실행 환경이므로 웹 포트를 자동으로 변경하지 않습니다.")
+            return False
+        input_func = input
+
+    prompt = (
+        f"웹 포트 {configured_port}이(가) 사용 중입니다. "
+        f"사용 가능한 {selected_port}(으)로 변경할까요? [Y/n]: "
+    )
+    while True:
+        try:
+            answer = input_func(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            output_func("웹 포트 변경을 취소했습니다.")
+            return False
+        if answer in {"", "y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        output_func("Y 또는 N을 입력하세요. Enter는 Y로 처리됩니다.")
+
+
+def resolve_startup_port(
+    host: str,
+    configured_port: int,
+    *,
+    excluded_ports: set[int] | frozenset[int] | None = None,
+    availability_check: Callable[[str, int], bool] = is_port_available,
+    existing_instance_check: Callable[[int], bool] = is_existing_instance,
+    confirm_change: Callable[[int, int], bool] = prompt_for_port_change,
+) -> PortResolution:
+    if availability_check(host, configured_port):
+        return PortResolution(configured_port, configured_port)
+    if existing_instance_check(configured_port):
+        return PortResolution(configured_port, configured_port, existing_instance=True)
+
+    selected_port = find_available_port(
+        host,
+        configured_port,
+        excluded_ports=excluded_ports,
+        availability_check=availability_check,
+    )
+    if selected_port is None:
+        upper = min(65535, configured_port + PORT_SEARCH_LIMIT)
+        raise StartupPortError(
+            f"웹 포트 {configured_port}부터 {upper} 사이에서 사용할 수 있는 포트를 찾지 못했습니다."
+        )
+    if not confirm_change(configured_port, selected_port):
+        raise PortChangeDeclined("사용자가 웹 포트 변경을 취소했습니다.")
+    return PortResolution(configured_port, selected_port)
+
+
+def _find_option(section: SectionProxy, option: str) -> str | None:
+    expected = option.casefold()
+    return next((name for name in section if name.casefold() == expected), None)
+
+
+def _get_option(section: SectionProxy, option: str, fallback: str = "") -> str:
+    existing = _find_option(section, option)
+    return section[existing] if existing is not None else fallback
+
+
+def _set_option(section: SectionProxy, option: str, value: str) -> None:
+    existing = _find_option(section, option)
+    section[existing or option] = value
+
+
+def _ensure_defaults(section: SectionProxy, defaults: dict[str, str]) -> None:
+    for option, value in defaults.items():
+        if _find_option(section, option) is None:
+            section[option] = value
+
+
+def _netloc_with_port(parsed: SplitResult, port: int) -> str:
+    user_info = ""
+    if "@" in parsed.netloc:
+        user_info = parsed.netloc.rsplit("@", 1)[0] + "@"
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{user_info}{host}:{port}"
+
+
+def rewrite_base_url_port(base_url: str, old_port: int, new_port: int) -> tuple[str, str]:
+    value = base_url.strip()
+    if not value:
+        return base_url, ""
+    try:
+        parsed = urlsplit(value)
+        explicit_port = parsed.port
+    except ValueError:
+        return base_url, "BASE_URL 형식을 확인할 수 없어 기존 값을 유지했습니다."
+    if not parsed.scheme or not parsed.hostname:
+        return base_url, "BASE_URL 형식을 확인할 수 없어 기존 값을 유지했습니다."
+
+    default_port = {"http": 80, "https": 443}.get(parsed.scheme.lower())
+    effective_port = explicit_port if explicit_port is not None else default_port
+    if effective_port != old_port:
+        return (
+            base_url,
+            f"BASE_URL이 기존 웹 포트 {old_port}을(를) 사용하지 않아 기존 값을 유지했습니다.",
+        )
+
+    updated = urlunsplit(parsed._replace(netloc=_netloc_with_port(parsed, new_port)))
+    return updated, ""
+
+
+def persist_port_change(
+    config_path: str | os.PathLike[str],
+    old_port: int,
+    new_port: int,
+) -> ConfigUpdateResult:
+    path = Path(config_path).resolve()
+    parser = ConfigParser(interpolation=None)
+    parser.optionxform = str
+    if path.exists():
+        with path.open("r", encoding="utf-8") as handle:
+            parser.read_file(handle)
+    if not parser.has_section(APP_SECTION):
+        parser.add_section(APP_SECTION)
+    if not parser.has_section(PROBE_SECTION):
+        parser.add_section(PROBE_SECTION)
+
+    app_section = parser[APP_SECTION]
+    probe_section = parser[PROBE_SECTION]
+    _ensure_defaults(app_section, DEFAULT_APP_SETTINGS)
+    _ensure_defaults(probe_section, DEFAULT_PROBE_SETTINGS)
+    _set_option(app_section, "PORT", str(new_port))
+
+    base_url = _get_option(app_section, "BASE_URL")
+    updated_base_url, warning = rewrite_base_url_port(base_url, old_port, new_port)
+    base_url_changed = updated_base_url != base_url
+    if base_url_changed:
+        _set_option(app_section, "BASE_URL", updated_base_url)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = path.stat().st_mode if path.exists() else None
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            parser.write(handle, space_around_delimiters=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary_path = Path(handle.name)
+        if original_mode is not None:
+            os.chmod(temporary_path, original_mode)
+        os.replace(temporary_path, path)
+    except OSError:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+    return ConfigUpdateResult(base_url_changed=base_url_changed, warning=warning)
+
+
+def check_windows_firewall_port(
+    port: int,
+    *,
+    platform: str | None = None,
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    active_platform = platform or sys.platform
+    if active_platform != "win32":
+        return FIREWALL_NOT_APPLICABLE
+
+    script = rf"""
+$ErrorActionPreference = 'Stop'
+function Test-LocalPort([string]$spec, [int]$target) {{
+    foreach ($part in ($spec -split ',')) {{
+        $value = $part.Trim()
+        if ($value -eq 'Any' -or $value -eq '*') {{ return $true }}
+        if ($value -match '^(\d+)-(\d+)$') {{
+            if ($target -ge [int]$Matches[1] -and $target -le [int]$Matches[2]) {{ return $true }}
+        }} elseif ($value -match '^\d+$' -and [int]$value -eq $target) {{
+            return $true
+        }}
+    }}
+    return $false
+}}
+try {{
+    $filters = Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow |
+        Get-NetFirewallPortFilter
+    foreach ($filter in $filters) {{
+        if (($filter.Protocol -eq 'TCP' -or $filter.Protocol -eq '6') -and
+            (Test-LocalPort ([string]$filter.LocalPort) {port})) {{ exit 0 }}
+    }}
+    exit 1
+}} catch {{ exit 2 }}
+""".strip()
+    try:
+        completed = run_command(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return FIREWALL_UNKNOWN
+    if completed.returncode == 0:
+        return FIREWALL_ALLOWED
+    if completed.returncode == 1:
+        return FIREWALL_NOT_FOUND
+    return FIREWALL_UNKNOWN
+
+
+def firewall_add_command(port: int) -> str:
+    return (
+        'netsh advfirewall firewall add rule '
+        f'name="InternalUpload TCP {port}" dir=in action=allow protocol=TCP localport={port}'
+    )

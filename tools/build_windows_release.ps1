@@ -73,10 +73,10 @@ chcp 65001 >nul
 cd /d "%~dp0"
 echo 사내 업로드 서버를 시작합니다.
 echo.
-echo 서버가 시작되면 브라우저에서 아래 주소로 접속하세요.
-echo   http://127.0.0.1:8000
-echo.
-echo 다른 PC에서 접속하려면 config.ini의 BASE_URL 또는 서버 PC 사내 IP를 확인하세요.
+echo 서버가 시작되면 콘솔에 실제 접속 주소가 표시됩니다.
+echo 설정 포트가 사용 중이면 빈 포트로 변경할지 물어봅니다.
+echo Enter 또는 Y는 변경, N은 취소입니다.
+echo 승인된 포트는 config.ini에 자동 저장됩니다.
 echo 종료하려면 이 창에서 Ctrl+C를 누르세요.
 echo.
 InternalUpload.exe
@@ -107,8 +107,10 @@ pause
 
 1. 이 ZIP 파일을 Windows 서버 PC의 원하는 폴더에 완전히 압축 해제합니다.
 2. start_internal_upload.cmd를 더블클릭합니다.
-3. 같은 PC에서는 http://127.0.0.1:8000 으로 접속합니다.
-4. 다른 PC에서는 서버 PC의 사내 IP와 8000 포트로 접속합니다.
+3. 콘솔에 표시된 실제 접속 주소를 브라우저에서 엽니다. 기본 포트는 8000입니다.
+4. 설정 포트가 이미 사용 중이면 프로그램이 빈 포트를 제안합니다.
+5. Enter 또는 Y로 승인하면 새 포트를 config.ini에 저장하고, N을 입력하면 변경 없이 종료합니다.
+6. 다른 PC에서는 콘솔에 표시된 서버 PC의 사내 IP와 실제 포트로 접속합니다.
 
 TCP 정밀 측정:
 1. 서버 config.ini의 [network_probe] ENABLED=true를 설정합니다.
@@ -123,7 +125,8 @@ TCP 정밀 측정:
 
 설정:
 - config.ini에서 PORT, BASE_URL, STORAGE_ROOT, DELETE_ALLOWED_IPS와 TCP 측정 포트를 수정할 수 있습니다.
-- Windows 방화벽에서 TCP 8000 포트가 막혀 있으면 다른 PC에서 접속할 수 없습니다.
+- 웹 포트가 변경되면 Windows 방화벽 상태와 필요한 수동 허용 명령을 콘솔에 표시합니다.
+- 방화벽 규칙과 관리자 권한은 자동으로 변경하지 않습니다.
 - TCP 정밀 측정에는 TCP 5201 포트도 필요합니다.
 
 주의:
@@ -158,14 +161,17 @@ TCP 정밀 측정:
 1. ZIP 파일을 Windows 서버 PC에 다운로드합니다.
 2. 압축을 완전히 해제합니다.
 3. ``start_internal_upload.cmd``를 더블클릭합니다.
-4. 같은 PC에서는 ``http://127.0.0.1:8000``으로 접속합니다.
-5. 다른 PC에서는 서버 PC의 사내 IP와 포트를 사용합니다.
+4. 콘솔에 표시된 실제 주소로 접속합니다. 기본 포트는 ``8000``입니다.
+5. 포트 충돌 시 프로그램이 제안한 빈 포트를 Enter 또는 ``Y``로 승인합니다.
+6. 다른 PC에서는 콘솔에 표시된 서버 PC의 사내 IP와 실제 포트를 사용합니다.
 
 ## 포함 기능
 
 - Python 설치 없이 실행되는 ``InternalUpload.exe``
 - 파일 업로드, 선택 메모 입력, 저장 하위 폴더 지정
 - ``config.ini`` 기반 ``BASE_URL``, 포트, 저장 기준 폴더, 삭제 허용 IP 설정
+- 웹 포트 충돌 시 다음 99개 포트 순차 확인, 사용자 승인과 실제 바인딩 후 설정 자동 저장
+- 동일 서버 중복 실행 감지, 조건부 ``BASE_URL`` 포트 변경과 Windows 방화벽 상태 안내
 - ``/download/<upload_id>`` 형식의 직접 다운로드 링크
 - 업로드/다운로드 전송 속도를 확인하는 네트워크 체크 모드
 - HTTP/1.1 브라우저 환경에서 안정적으로 동작하는 조각 단위 업로드 측정
@@ -187,7 +193,7 @@ TCP 정밀 측정:
 
 ## 검증
 
-- ``python -m compileall app.py network_sustained.py network_measurement.py network_probe tests tools`` 통과
+- ``python -m compileall app.py startup_ports.py network_sustained.py network_measurement.py network_probe tests tools`` 통과
 - ``python -m pytest -q`` 통과
 - ``InternalUpload.exe --smoke-check`` 통과
 - ``InternalUpload.exe --probe-self-check`` 통과
@@ -201,6 +207,7 @@ TCP 정밀 측정:
 - 지속 측정은 브라우저 HTTP 전송 성능이며 TCP·UDP 정밀 측정이나 iperf 결과와는 다릅니다.
 - TCP 정밀 측정은 자체 TCP 프로토콜이며 iperf 실행파일·라이브러리·호환 프로토콜을 사용하지 않습니다.
 - UDP 정밀 측정과 Android 네이티브 TCP 클라이언트는 포함하지 않습니다.
+- TCP 정밀 측정 포트 ``5201``과 Windows 방화벽 규칙은 자동으로 변경하지 않습니다.
 - 코드서명하지 않은 EXE이므로 Windows SmartScreen 경고가 표시될 수 있습니다.
 - GitHub 기본 ``Source code (zip)`` / ``Source code (tar.gz)``는 소스 아카이브이며 일반 실행용 파일은 아닙니다.
 "@ | Set-Content -Path $ReleaseNotesPath -Encoding UTF8

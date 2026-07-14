@@ -6,7 +6,7 @@ on:
       version:
         description: "Release version tag, for example v0.3.0"
         required: true
-        default: "v0.4.0-rc.2"
+        default: "v0.4.0-rc.3"
   push:
     tags:
       - "v*"
@@ -41,7 +41,7 @@ jobs:
       - name: Run source checks
         shell: pwsh
         run: |
-          python -m compileall app.py network_sustained.py network_measurement.py network_probe tests tools
+          python -m compileall app.py startup_ports.py network_sustained.py network_measurement.py network_probe tests tools
           python -m pytest -q
 
       - name: Build Windows release ZIP

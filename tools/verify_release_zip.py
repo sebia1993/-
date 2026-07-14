@@ -80,6 +80,16 @@ def validate_manual_probe_launcher(zip_file: ZipFile) -> list[str]:
     return errors
 
 
+def validate_server_launcher(zip_file: ZipFile) -> list[str]:
+    command = zip_file.read("start_internal_upload.cmd").decode("utf-8-sig")
+    errors = []
+    if "InternalUpload.exe" not in command:
+        errors.append("start_internal_upload.cmd does not start InternalUpload.exe")
+    if "실제 접속 주소" not in command or "config.ini" not in command:
+        errors.append("start_internal_upload.cmd does not explain automatic web port selection")
+    return errors
+
+
 def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
     errors = []
     with ZipFile(zip_path) as archive:
@@ -137,6 +147,8 @@ def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
                 errors.append(f"README_START_HERE_KO.txt does not mention {version}")
         if "start_tcp_probe_client.cmd" in names:
             errors.extend(validate_manual_probe_launcher(archive))
+        if "start_internal_upload.cmd" in names:
+            errors.extend(validate_server_launcher(archive))
     return errors
 
 
