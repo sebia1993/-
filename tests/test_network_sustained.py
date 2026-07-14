@@ -1,5 +1,6 @@
 import csv
 import json
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 from openpyxl import load_workbook
 
 from app import create_app
+from network_measurement import NetworkMeasurementGate
 from network_sustained import (
     SUSTAINED_LOG_FIELDS,
     SustainedCheckError,
@@ -189,6 +191,41 @@ def test_manager_excludes_warmup_and_persists_result(tmp_path):
     assert rows[0]["direction"] == "upload"
 
 
+def test_manager_csv_partial_write_failure_rolls_back_log_and_json(tmp_path, monkeypatch):
+    gate = NetworkMeasurementGate()
+    manager = SustainedCheckManager(
+        log_path=tmp_path / "data" / "network_check_session_log.csv",
+        results_root=tmp_path / "data" / "network_check_results",
+        measurement_gate=gate,
+    )
+    session = manager.start_session(
+        client_ip="10.0.0.10",
+        direction="full",
+        duration_seconds=10,
+        stream_count=1,
+    )
+    original_log = manager.log_path.read_bytes()
+    original_writerow = csv.DictWriter.writerow
+    call_count = 0
+
+    def fail_second_writerow(writer, row):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError("disk full")
+        return original_writerow(writer, row)
+
+    monkeypatch.setattr(csv.DictWriter, "writerow", fail_second_writerow)
+
+    with pytest.raises(OSError, match="disk full"):
+        manager.cancel(session.session_id, session.client_ip)
+
+    assert manager.log_path.read_bytes() == original_log
+    assert not (manager.results_root / f"{session.session_id}.json").exists()
+    assert manager.active_session is None
+    assert gate.is_available() is True
+
+
 def test_manager_rejects_parallel_session_and_wrong_ip(tmp_path):
     clock = FakeClock()
     manager = create_manager(tmp_path, clock)
@@ -232,6 +269,31 @@ def test_manager_expiry_releases_active_slot_and_records_failure(tmp_path):
     )
 
     assert replacement.session_id != session.session_id
+    expired_path = tmp_path / "data" / "network_check_results" / f"{session.session_id}.json"
+    assert json.loads(expired_path.read_text(encoding="utf-8"))["status"] == "failure"
+
+
+def test_manager_automatically_expires_abandoned_session_and_releases_gate(tmp_path):
+    gate = NetworkMeasurementGate()
+    manager = SustainedCheckManager(
+        log_path=tmp_path / "data" / "network_check_session_log.csv",
+        results_root=tmp_path / "data" / "network_check_results",
+        settings=SustainedCheckSettings(session_ttl_seconds=0.05, download_chunk_bytes=1024),
+        measurement_gate=gate,
+    )
+    session = manager.start_session(
+        client_ip="10.0.0.10",
+        direction="upload",
+        duration_seconds=10,
+        stream_count=1,
+    )
+
+    deadline = time.perf_counter() + 1
+    while manager.active_session is not None and time.perf_counter() < deadline:
+        time.sleep(0.01)
+
+    assert manager.active_session is None
+    assert gate.is_available() is True
     expired_path = tmp_path / "data" / "network_check_results" / f"{session.session_id}.json"
     assert json.loads(expired_path.read_text(encoding="utf-8"))["status"] == "failure"
 

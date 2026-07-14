@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import statistics
 import threading
 import time
@@ -197,7 +198,37 @@ class SustainedCheckManager:
                 last_activity_at=now,
             )
             self.active_session = session
-            return session
+        self._start_expiry_watchdog(session.session_id)
+        return session
+
+    def _start_expiry_watchdog(self, session_id: str) -> None:
+        def watch() -> None:
+            while True:
+                with self.lock:
+                    session = self.active_session
+                    if session is None or session.session_id != session_id:
+                        return
+                    remaining = self.settings.session_ttl_seconds - (
+                        self.clock() - session.last_activity_at
+                    )
+                if remaining > 0:
+                    time.sleep(min(max(remaining, 0.01), 1.0))
+                    continue
+                try:
+                    self.cleanup_expired()
+                except Exception:
+                    return
+                with self.lock:
+                    session = self.active_session
+                    if session is None or session.session_id != session_id:
+                        return
+                time.sleep(0.01)
+
+        threading.Thread(
+            target=watch,
+            name=f"http-sustained-expiry-{session_id[:8]}",
+            daemon=True,
+        ).start()
 
     def _require_session(self, session_id: str, client_ip: str) -> SustainedSession:
         session = self.active_session
@@ -441,37 +472,49 @@ class SustainedCheckManager:
         temporary_path = result_path.with_suffix(".json.tmp")
         relative_result_path = f"data/network_check_results/{result_path.name}"
         with self.storage_lock:
-            temporary_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary_path.replace(result_path)
             try:
-                with self.log_path.open("a", encoding="utf-8", newline="") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=SUSTAINED_LOG_FIELDS)
-                    for direction, summary in result["directions"].items():
-                        writer.writerow(
-                            {
-                                "checked_at": result["completed_at"],
-                                "session_id": result["session_id"],
-                                "client_ip": result["client_ip"],
-                                "direction": direction,
-                                "duration_seconds": result["requested"]["duration_seconds"],
-                                "warmup_seconds": result["requested"]["warmup_seconds"],
-                                "stream_count": result["requested"]["stream_count"],
-                                "bytes_transferred": summary["bytes_transferred"],
-                                "actual_duration_seconds": summary["actual_duration_seconds"],
-                                "average_mbps": summary["average_mbps"],
-                                "median_mbps": summary["median_mbps"],
-                                "min_mbps": summary["min_mbps"],
-                                "max_mbps": summary["max_mbps"],
-                                "variability_percent": summary["variability_percent"],
-                                "http_latency_median_ms": result["http_latency"]["median_ms"] or "",
-                                "status": result["status"],
-                                "error": result["error"],
-                                "result_json": relative_result_path,
-                            }
-                        )
-            except Exception:
-                result_path.unlink(missing_ok=True)
-                raise
+                original_log_size = self.log_path.stat().st_size
+                temporary_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+                temporary_path.replace(result_path)
+                try:
+                    with self.log_path.open("a", encoding="utf-8", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=SUSTAINED_LOG_FIELDS)
+                        for direction, summary in result["directions"].items():
+                            writer.writerow(
+                                {
+                                    "checked_at": result["completed_at"],
+                                    "session_id": result["session_id"],
+                                    "client_ip": result["client_ip"],
+                                    "direction": direction,
+                                    "duration_seconds": result["requested"]["duration_seconds"],
+                                    "warmup_seconds": result["requested"]["warmup_seconds"],
+                                    "stream_count": result["requested"]["stream_count"],
+                                    "bytes_transferred": summary["bytes_transferred"],
+                                    "actual_duration_seconds": summary["actual_duration_seconds"],
+                                    "average_mbps": summary["average_mbps"],
+                                    "median_mbps": summary["median_mbps"],
+                                    "min_mbps": summary["min_mbps"],
+                                    "max_mbps": summary["max_mbps"],
+                                    "variability_percent": summary["variability_percent"],
+                                    "http_latency_median_ms": result["http_latency"]["median_ms"] or "",
+                                    "status": result["status"],
+                                    "error": result["error"],
+                                    "result_json": relative_result_path,
+                                }
+                            )
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                except Exception:
+                    try:
+                        with self.log_path.open("r+b") as handle:
+                            handle.truncate(original_log_size)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                    finally:
+                        result_path.unlink(missing_ok=True)
+                    raise
+            finally:
+                temporary_path.unlink(missing_ok=True)
 
 
 def create_sustained_blueprint(

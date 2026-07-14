@@ -1,5 +1,7 @@
 import csv
 import io
+import threading
+import time
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -19,6 +21,7 @@ from app import (
     run_smoke_check,
 )
 from network_sustained import SUSTAINED_LOG_FIELDS
+from network_measurement import NetworkMeasurementGate
 from network_probe.service import PROBE_LOG_FIELDS
 from tools.verify_release_zip import REQUIRED_FILES, verify_zip
 
@@ -121,6 +124,24 @@ def test_upload_log_failure_removes_saved_file(app_client, monkeypatch):
     assert not (config.storage_root / "orphan.txt").exists()
 
 
+def test_upload_partial_log_write_failure_rolls_back_csv_and_file(app_client, monkeypatch):
+    client, config, _ = app_client
+    original_log = config.log_path.read_bytes()
+    original_writerow = csv.DictWriter.writerow
+
+    def write_then_fail(writer, row):
+        original_writerow(writer, row)
+        raise OSError("partial log write")
+
+    monkeypatch.setattr(csv.DictWriter, "writerow", write_then_fail)
+
+    with pytest.raises(OSError, match="partial log write"):
+        post_file(client, filename="partial.txt", content=b"partial")
+
+    assert not (config.storage_root / "partial.txt").exists()
+    assert config.log_path.read_bytes() == original_log
+
+
 def test_memo_is_optional(app_client):
     client, config, _ = app_client
     response = post_file(client, filename="memo-optional.txt")
@@ -149,6 +170,48 @@ def test_duplicate_requires_confirmation_then_adds_id(app_client):
     assert len(rows) == 2
     assert rows[0]["stored_filename"].endswith("_same.txt")
     assert rows[0]["stored_filename"] != "same.txt"
+
+
+def test_concurrent_duplicate_upload_does_not_overwrite_without_confirmation(tmp_path, monkeypatch):
+    config_path = write_config(tmp_path)
+    flask_app = create_app(config_path)
+    flask_app.config.update(TESTING=True)
+    config = load_config(config_path)
+    barrier = threading.Barrier(2)
+    original_generate_upload_id = app_module.generate_upload_id
+    responses = []
+    errors = []
+
+    def synchronized_generate_upload_id(now=None):
+        barrier.wait(timeout=3)
+        return original_generate_upload_id(now)
+
+    def upload(content):
+        try:
+            with flask_app.test_client() as client:
+                response = post_file(client, filename="same.txt", content=content)
+                responses.append(response.status_code)
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(app_module, "generate_upload_id", synchronized_generate_upload_id)
+    threads = [
+        threading.Thread(target=upload, args=(content,))
+        for content in (b"first", b"second")
+    ]
+
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert sorted(responses) == [200, 409]
+    rows = read_upload_log(config)
+    assert len(rows) == 1
+    assert len({row["storage_path"] for row in rows}) == 1
+    assert Path(rows[0]["storage_path"]).read_bytes() in {b"first", b"second"}
 
 
 def test_download_by_id(app_client):
@@ -182,6 +245,50 @@ def test_delete_requires_allowed_ip(app_client):
     assert allowed.status_code == 302
     assert not Path(row["storage_path"]).exists()
     assert read_upload_log(config) == []
+
+
+def test_delete_log_write_failure_preserves_file_and_record(app_client, monkeypatch):
+    client, config, _ = app_client
+    post_file(client, filename="keep-on-failure.txt", content=b"keep me")
+    row = read_upload_log(config)[0]
+
+    def fail_writerows(_writer, _rows):
+        raise OSError("log write failed")
+
+    monkeypatch.setattr(csv.DictWriter, "writerows", fail_writerows)
+
+    with pytest.raises(OSError, match="log write failed"):
+        client.post(
+            f"/delete/{row['upload_id']}",
+            environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+        )
+
+    assert Path(row["storage_path"]).read_bytes() == b"keep me"
+    assert read_upload_log(config) == [row]
+
+
+def test_delete_file_failure_restores_upload_record(app_client, monkeypatch):
+    client, config, _ = app_client
+    post_file(client, filename="locked.txt", content=b"locked")
+    row = read_upload_log(config)[0]
+    file_path = Path(row["storage_path"])
+    original_unlink = Path.unlink
+
+    def fail_target_unlink(path, *args, **kwargs):
+        if path == file_path:
+            raise PermissionError("file is locked")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_target_unlink)
+
+    with pytest.raises(PermissionError, match="file is locked"):
+        client.post(
+            f"/delete/{row['upload_id']}",
+            environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+        )
+
+    assert file_path.read_bytes() == b"locked"
+    assert read_upload_log(config) == [row]
 
 
 def test_delete_button_only_for_allowed_ip(app_client):
@@ -319,6 +426,28 @@ def test_network_check_upload_logs_incomplete_body(app_client, monkeypatch):
     rows = read_network_check_log(config)
     assert rows[0]["direction"] == "upload"
     assert rows[0]["bytes_transferred"] == str(9 * 1024)
+    assert rows[0]["status"] == "failure"
+
+
+def test_network_check_upload_session_automatically_expires_and_releases_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "NETWORK_CHECK_UPLOAD_SESSION_TTL_SECONDS", 0.05)
+    config_path = write_config(tmp_path)
+    gate = NetworkMeasurementGate()
+    flask_app = create_app(config_path, measurement_gate=gate)
+    flask_app.config.update(TESTING=True)
+    config = load_config(config_path)
+
+    with flask_app.test_client() as client:
+        started = client.post("/network-check/upload/start?size_mb=10")
+    assert started.status_code == 200
+
+    deadline = time.perf_counter() + 1
+    while not gate.is_available() and time.perf_counter() < deadline:
+        time.sleep(0.01)
+
+    assert gate.is_available() is True
+    rows = read_network_check_log(config)
+    assert len(rows) == 1
     assert rows[0]["status"] == "failure"
 
 

@@ -125,6 +125,11 @@ class NetworkCheckUploadSession:
     expected_bytes: int
     started_at: float
     bytes_received: int = 0
+    expiry_timer: threading.Timer | None = None
+
+
+class UploadConflictError(RuntimeError):
+    pass
 
 
 def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
@@ -264,6 +269,40 @@ def generate_upload_id(now: datetime | None = None) -> str:
     return f"{current.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 
+def reserve_upload_target(
+    storage_dir: Path,
+    original_filename: str,
+    *,
+    confirm_duplicate: bool,
+) -> tuple[str, str, Path]:
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    original_target = storage_dir / original_filename
+    original_exists = original_target.exists()
+    if original_exists and not confirm_duplicate:
+        raise UploadConflictError
+
+    upload_id = generate_upload_id()
+    if not original_exists:
+        try:
+            original_target.touch(exist_ok=False)
+        except FileExistsError:
+            if not confirm_duplicate:
+                raise UploadConflictError from None
+        else:
+            return upload_id, original_filename, original_target
+
+    for _ in range(10):
+        stored_filename = f"{upload_id}_{original_filename}"
+        target_path = storage_dir / stored_filename
+        try:
+            target_path.touch(exist_ok=False)
+        except FileExistsError:
+            upload_id = generate_upload_id()
+            continue
+        return upload_id, stored_filename, target_path
+    raise OSError("고유한 업로드 저장 경로를 예약할 수 없습니다.")
+
+
 def detect_lan_ip() -> str:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -304,12 +343,30 @@ def is_loopback_url(url: str) -> bool:
         return False
 
 
+def _append_csv_row_with_rollback(
+    log_path: Path,
+    fieldnames: list[str],
+    row: dict[str, str],
+) -> None:
+    original_size = log_path.stat().st_size
+    try:
+        with log_path.open("a", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        with log_path.open("r+b") as handle:
+            handle.truncate(original_size)
+            handle.flush()
+            os.fsync(handle.fileno())
+        raise
+
+
 def append_upload_log(row: dict[str, str], config: AppConfig) -> None:
     with _csv_lock:
         ensure_log_file(config.log_path)
-        with config.log_path.open("a", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
-            writer.writerow({field: row.get(field, "") for field in CSV_FIELDS})
+        _append_csv_row_with_rollback(config.log_path, CSV_FIELDS, row)
 
 
 def read_upload_log(config: AppConfig, limit: int | None = None) -> list[dict[str, str]]:
@@ -328,6 +385,20 @@ def find_upload(upload_id: str, config: AppConfig) -> dict[str, str] | None:
     return None
 
 
+def _write_upload_log_rows(log_path: Path, rows: list[dict[str, str]]) -> None:
+    temporary_path = log_path.with_name(f".{log_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary_path.open("x", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, log_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def delete_upload_log(upload_id: str, config: AppConfig) -> bool:
     with _csv_lock:
         ensure_log_file(config.log_path)
@@ -335,11 +406,22 @@ def delete_upload_log(upload_id: str, config: AppConfig) -> bool:
             rows = list(csv.DictReader(handle))
         kept_rows = [row for row in rows if row.get("upload_id") != upload_id]
         deleted = len(kept_rows) != len(rows)
-        with config.log_path.open("w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
-            writer.writeheader()
-            writer.writerows(kept_rows)
-        return deleted
+        if not deleted:
+            return False
+
+        deleted_row = next(row for row in rows if row.get("upload_id") == upload_id)
+        file_path = record_file_path(deleted_row)
+        should_delete_file = file_path.exists() and file_path.is_file()
+        _write_upload_log_rows(config.log_path, kept_rows)
+        if should_delete_file:
+            try:
+                file_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                _write_upload_log_rows(config.log_path, rows)
+                raise
+        return True
 
 
 def normalize_ip(value: str | None) -> str:
@@ -439,9 +521,7 @@ def build_network_check_response_payload(
 def append_network_check_log(row: dict[str, str], config: AppConfig) -> None:
     with _network_check_csv_lock:
         ensure_network_check_log_file(config.network_check_log_path)
-        with config.network_check_log_path.open("a", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=NETWORK_CHECK_FIELDS)
-            writer.writerow({field: row.get(field, "") for field in NETWORK_CHECK_FIELDS})
+        _append_csv_row_with_rollback(config.network_check_log_path, NETWORK_CHECK_FIELDS, row)
 
 
 def read_network_check_log(config: AppConfig, limit: int | None = None) -> list[dict[str, str]]:
@@ -507,6 +587,9 @@ def create_app(
         status: str,
         error: str = "",
     ) -> dict[str, str | int | float]:
+        if session.expiry_timer is not None:
+            session.expiry_timer.cancel()
+            session.expiry_timer = None
         duration = time.perf_counter() - session.started_at
         row = build_network_check_log_row(
             client_ip=session.client_ip,
@@ -528,6 +611,20 @@ def create_app(
             status=status,
             error=error,
         )
+
+    def expire_upload_session(session_id: str) -> None:
+        with upload_sessions_lock:
+            session = upload_sessions.pop(session_id, None)
+        if session is None:
+            return
+        try:
+            finalize_upload_session(
+                session,
+                status="failure",
+                error="네트워크 체크 업로드 세션이 만료되었습니다.",
+            )
+        except Exception as exc:
+            print(f"네트워크 체크 업로드 세션 만료 기록 실패: {exc}", file=sys.stderr)
 
     def cleanup_expired_upload_sessions() -> None:
         now = time.perf_counter()
@@ -602,8 +699,13 @@ def create_app(
             )
 
         original_filename = safe_filename(uploaded_file.filename)
-        original_target = storage_dir / original_filename
-        if original_target.exists() and not confirm_duplicate:
+        try:
+            upload_id, stored_filename, target_path = reserve_upload_target(
+                storage_dir,
+                original_filename,
+                confirm_duplicate=confirm_duplicate,
+            )
+        except UploadConflictError:
             return render_index(
                 status_code=409,
                 conflict={
@@ -614,14 +716,7 @@ def create_app(
                 memo=memo,
             )
 
-        upload_id = generate_upload_id()
-        stored_filename = original_filename
-        if original_target.exists():
-            stored_filename = f"{upload_id}_{original_filename}"
-        target_path = storage_dir / stored_filename
-        target_existed_before = target_path.exists()
         try:
-            storage_dir.mkdir(parents=True, exist_ok=True)
             uploaded_file.save(target_path)
 
             download_url = build_download_url(upload_id, config)
@@ -637,7 +732,7 @@ def create_app(
             }
             append_upload_log(row, config)
         except Exception:
-            cleanup_created_file(target_path, target_existed_before)
+            cleanup_created_file(target_path, existed_before=False)
             raise
 
         return render_index(
@@ -669,10 +764,8 @@ def create_app(
         row = find_upload(upload_id, config)
         if not row:
             abort(404)
-        file_path = record_file_path(row)
-        if file_path.exists() and file_path.is_file():
-            file_path.unlink()
-        delete_upload_log(upload_id, config)
+        if not delete_upload_log(upload_id, config):
+            abort(404)
         return redirect(url_for("index", deleted="1"))
 
     @app.get("/network-check/download")
@@ -811,8 +904,15 @@ def create_app(
             expected_bytes=network_check_total_bytes(size_mb),
             started_at=time.perf_counter(),
         )
+        session.expiry_timer = threading.Timer(
+            NETWORK_CHECK_UPLOAD_SESSION_TTL_SECONDS,
+            expire_upload_session,
+            args=(session_id,),
+        )
+        session.expiry_timer.daemon = True
         with upload_sessions_lock:
             upload_sessions[session_id] = session
+        session.expiry_timer.start()
         return jsonify(
             {
                 "session_id": session_id,

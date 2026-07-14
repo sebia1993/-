@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import socket
@@ -33,6 +34,7 @@ def build_service(
     *,
     enabled: bool = True,
     attach_timeout: float = 10.0,
+    agent_ttl: float = 10.0,
 ) -> tuple[ProbeService, NetworkMeasurementGate]:
     gate = NetworkMeasurementGate()
     service = ProbeService(
@@ -44,7 +46,7 @@ def build_service(
             results_root=tmp_path / "data" / "network_probe_results",
             warmup_seconds=0.05,
             long_poll_seconds=0.05,
-            agent_ttl_seconds=10,
+            agent_ttl_seconds=agent_ttl,
             stream_attach_timeout_seconds=attach_timeout,
         ),
         measurement_gate=gate,
@@ -65,7 +67,14 @@ def register(service: ProbeService) -> dict:
     )
 
 
-def run_client_phase(service: ProbeService, registration: dict, job: dict, phase: str) -> dict:
+def run_client_phase(
+    service: ProbeService,
+    registration: dict,
+    job: dict,
+    phase: str,
+    *,
+    complete: bool = True,
+) -> dict:
     sockets: dict[int, socket.socket] = {}
     try:
         for stream_id in range(int(job["stream_count"])):
@@ -127,6 +136,8 @@ def run_client_phase(service: ProbeService, registration: dict, job: dict, phase
         assert not errors
         assert all(not thread.is_alive() for thread in threads)
         result = aggregate_stream_results(results, role=role, duration_seconds=int(job["duration_seconds"]))
+        if not complete:
+            return result
         return service.complete_agent_phase(
             str(job["session_id"]),
             str(registration["agent_id"]),
@@ -244,6 +255,57 @@ def test_probe_stream_attach_timeout_fails_session_and_releases_gate(tmp_path, m
         service.stop()
 
 
+def test_probe_unclaimed_job_timeout_fails_session_and_releases_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "PROBE_DURATIONS", (1,))
+    service, gate = build_service(tmp_path, agent_ttl=0.05)
+    assert service.start() is True
+    try:
+        registration = register(service)
+        created = service.create_session(
+            agent_id=registration["agent_id"],
+            direction="upload",
+            duration_seconds=1,
+            stream_count=1,
+        )
+
+        time.sleep(0.15)
+        status = service.session_status(created["session_id"])
+
+        assert status["status"] == "failed"
+        assert "작업을 가져오지 않았습니다" in status["error"]
+        assert gate.is_available() is True
+    finally:
+        service.stop()
+
+
+def test_probe_result_submission_timeout_fails_session_and_releases_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "PROBE_DURATIONS", (1,))
+    monkeypatch.setattr(service_module, "RESULT_SUBMISSION_TIMEOUT_SECONDS", 0.05, raising=False)
+    service, gate = build_service(tmp_path)
+    assert service.start() is True
+    try:
+        registration = register(service)
+        created = service.create_session(
+            agent_id=registration["agent_id"],
+            direction="upload",
+            duration_seconds=1,
+            stream_count=1,
+        )
+        job = service.next_job(
+            registration["agent_id"], registration["agent_token"], "127.0.0.1"
+        )["job"]
+
+        run_client_phase(service, registration, job, "upload", complete=False)
+        time.sleep(0.15)
+        status = service.session_status(created["session_id"])
+
+        assert status["status"] == "failed"
+        assert "결과 수신 시간이 초과" in status["error"]
+        assert gate.is_available() is True
+    finally:
+        service.stop()
+
+
 def test_probe_storage_failure_does_not_leave_measurement_gate_locked(tmp_path, monkeypatch):
     monkeypatch.setattr(service_module, "PROBE_DURATIONS", (1,))
     service, gate = build_service(tmp_path)
@@ -266,6 +328,43 @@ def test_probe_storage_failure_does_not_leave_measurement_gate_locked(tmp_path, 
 
         assert result["status"] == "failed"
         assert "결과 저장 실패" in result["error"]
+        assert gate.is_available() is True
+    finally:
+        service.stop()
+
+
+def test_probe_csv_partial_write_failure_rolls_back_log_and_json(tmp_path, monkeypatch):
+    service, gate = build_service(tmp_path)
+    assert service.start() is True
+    try:
+        registration = register(service)
+        created = service.create_session(
+            agent_id=registration["agent_id"],
+            direction="full",
+            duration_seconds=10,
+            stream_count=1,
+        )
+        original_log = service.config.log_path.read_bytes()
+        original_writerow = csv.DictWriter.writerow
+        call_count = 0
+
+        def fail_second_writerow(writer, row):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise OSError("disk full")
+            return original_writerow(writer, row)
+
+        monkeypatch.setattr(csv.DictWriter, "writerow", fail_second_writerow)
+
+        result = service.cancel_session(created["session_id"])
+
+        assert result["status"] == "failed"
+        assert "결과 저장 실패" in result["error"]
+        assert service.config.log_path.read_bytes() == original_log
+        with pytest.raises(ProbeServiceError) as exc_info:
+            service.result_path_for(created["session_id"])
+        assert exc_info.value.status_code == 404
         assert gate.is_available() is True
     finally:
         service.stop()
