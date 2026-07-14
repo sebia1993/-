@@ -347,6 +347,11 @@ class ProbeService:
                     if session.status in TERMINAL_STATUSES
                     else ""
                 ),
+                "excel_url": (
+                    f"/api/network-probe/results/{session.session_id}.xlsx"
+                    if session.status in TERMINAL_STATUSES
+                    else ""
+                ),
             }
 
     def cancel_session(self, session_id: str, error: str = "사용자가 TCP 측정을 취소했습니다.") -> dict[str, Any]:
@@ -435,6 +440,16 @@ class ProbeService:
         if not path.exists() or not path.is_file():
             raise ProbeServiceError("TCP 측정 결과를 찾을 수 없습니다.", 404)
         return path
+
+    def saved_result_for(self, session_id: str) -> dict[str, Any]:
+        path = self.result_path_for(session_id)
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ProbeServiceError("TCP 측정 결과 파일을 읽을 수 없습니다.", 500) from exc
+        if not isinstance(saved, dict):
+            raise ProbeServiceError("TCP 측정 결과 파일 형식이 올바르지 않습니다.", 500)
+        return saved
 
     def _accept_loop(self) -> None:
         while not self.stop_event.is_set():

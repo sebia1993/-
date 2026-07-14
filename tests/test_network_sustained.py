@@ -233,7 +233,7 @@ def test_manager_rejects_parallel_session_and_wrong_ip(tmp_path):
         client_ip="10.0.0.10",
         direction="download",
         duration_seconds=10,
-        stream_count=4,
+        stream_count=1,
     )
 
     with pytest.raises(SustainedCheckError) as conflict:
@@ -312,6 +312,13 @@ def test_sustained_routes_validate_and_cancel(sustained_client):
         json={"direction": "upload", "duration_seconds": 5, "stream_count": 1},
     )
     assert invalid.status_code == 400
+
+    parallel = client.post(
+        "/network-check/sustained/sessions",
+        json={"direction": "upload", "duration_seconds": 10, "stream_count": 4},
+    )
+    assert parallel.status_code == 400
+    assert "1개 연결" in parallel.json["error"]
 
     started = client.post(
         "/network-check/sustained/sessions",

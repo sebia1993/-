@@ -309,7 +309,7 @@ select:disabled {
 
 .measurement-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 16px;
 }
@@ -482,6 +482,57 @@ select:disabled {
   font-weight: 700;
 }
 
+.transfer-result-list {
+  gap: 0;
+}
+
+.transfer-result {
+  border-top: 1px solid var(--line);
+  padding: 14px 0;
+}
+
+.transfer-result:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.transfer-result h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.transfer-result-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+  margin: 0;
+}
+
+.transfer-result-details div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.transfer-result-details dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.transfer-result-details dd {
+  margin: 0;
+  font-weight: 700;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.measurement-explanation {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .section-title {
   display: flex;
   align-items: center;
@@ -556,7 +607,8 @@ th {
   .network-actions,
   .network-layout,
   .metric-grid,
-  .sustained-metrics {
+  .sustained-metrics,
+  .transfer-result-details {
     grid-template-columns: 1fr;
   }
 

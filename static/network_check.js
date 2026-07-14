@@ -38,6 +38,33 @@
     return `${seconds.toFixed(2)}초`;
   }
 
+  function formatDataAmount(byteCount) {
+    if (!Number.isFinite(byteCount) || byteCount < 0) {
+      return "-";
+    }
+    const megaBytes = byteCount / MB;
+    if (megaBytes >= 1024) {
+      return `${(megaBytes / 1024).toFixed(2)} GB (${megaBytes.toFixed(0)} MB)`;
+    }
+    return `${megaBytes.toFixed(megaBytes >= 100 ? 0 : 1)} MB`;
+  }
+
+  function formatOneGigabyteEstimate(mbps) {
+    if (!Number.isFinite(mbps) || mbps <= 0) {
+      return "-";
+    }
+    const seconds = 1024 / (mbps / 8);
+    if (seconds < 60) {
+      return `약 ${seconds.toFixed(1)}초`;
+    }
+    if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60);
+      return `약 ${minutes}분 ${Math.round(seconds % 60)}초`;
+    }
+    const hours = Math.floor(seconds / 3600);
+    return `약 ${hours}시간 ${Math.round((seconds % 3600) / 60)}분`;
+  }
+
   function buildUrl(baseUrl, params) {
     const url = new URL(baseUrl, window.location.href);
     Object.entries(params || {}).forEach(([key, value]) => {
@@ -64,6 +91,7 @@
     const summary = root.querySelector("[data-summary]");
     const resultList = root.querySelector("[data-result-list]");
     const measurementModeButtons = root.querySelectorAll("[data-measurement-mode]");
+    const criterionButtons = root.querySelectorAll("[data-http-criterion]");
 
     let running = false;
     let activeController = null;
@@ -79,6 +107,9 @@
       cancelButton.hidden = !nextRunning;
       sizeSelect.disabled = nextRunning;
       measurementModeButtons.forEach((button) => {
+        button.disabled = nextRunning;
+      });
+      criterionButtons.forEach((button) => {
         button.disabled = nextRunning;
       });
       root.dataset.simpleRunning = nextRunning ? "true" : "";
@@ -132,13 +163,34 @@
       resultList.innerHTML = "";
       results.forEach((result) => {
         const item = document.createElement("div");
-        item.className = "result-item";
-        item.textContent = `${result.label}: ${formatSpeed(result.mbps)} · ${formatDuration(result.elapsedSeconds)} · ${result.sizeMb}MB`;
+        item.className = "transfer-result";
+
+        const title = document.createElement("h3");
+        title.textContent = `${result.label} 결과`;
+        item.appendChild(title);
+
+        const details = document.createElement("dl");
+        details.className = "transfer-result-details";
+        const rows = [
+          ["전송한 데이터", formatDataAmount(result.bytesDone)],
+          ["걸린 시간", formatDuration(result.elapsedSeconds)],
+          ["최종 평균 속도", formatSpeed(result.mbps)],
+          ["파일 전송량", `초당 ${(result.mbps / 8).toFixed(result.mbps >= 800 ? 1 : 2)} MB`],
+          ["1GB 예상 시간", formatOneGigabyteEstimate(result.mbps)],
+        ];
+        rows.forEach(([label, value]) => {
+          const row = document.createElement("div");
+          const term = document.createElement("dt");
+          const description = document.createElement("dd");
+          term.textContent = label;
+          description.textContent = value;
+          row.append(term, description);
+          details.appendChild(row);
+        });
+        item.appendChild(details);
         resultList.appendChild(item);
       });
-      summary.textContent = results
-        .map((result) => `${result.label} ${formatSpeed(result.mbps)}`)
-        .join(" / ");
+      summary.textContent = `${results.map((result) => result.label).join("·")} 측정 완료`;
     }
 
     function makeUploadChunk() {

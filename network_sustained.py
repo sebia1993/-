@@ -50,7 +50,7 @@ SUSTAINED_LOG_FIELDS = [
 @dataclass(frozen=True)
 class SustainedCheckSettings:
     allowed_durations: tuple[int, ...] = (10, 30)
-    allowed_stream_counts: tuple[int, ...] = (1, 4)
+    allowed_stream_counts: tuple[int, ...] = (1,)
     warmup_seconds: float = 3.0
     session_ttl_seconds: float = 5 * 60
     max_upload_chunk_bytes: int = 8 * 1024 * 1024
@@ -176,7 +176,7 @@ class SustainedCheckManager:
         if duration_seconds not in self.settings.allowed_durations:
             raise SustainedCheckError("측정 시간은 10초 또는 30초만 선택할 수 있습니다.")
         if stream_count not in self.settings.allowed_stream_counts:
-            raise SustainedCheckError("HTTP 연결 수는 1개 또는 4개만 선택할 수 있습니다.")
+            raise SustainedCheckError("HTTP 시간 기준 측정은 1개 연결만 지원합니다.")
 
         now = self.clock()
         session_id = uuid.uuid4().hex

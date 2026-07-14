@@ -177,59 +177,60 @@
           <h2>네트워크 체크</h2>
 
           <div class="measurement-tabs" role="tablist" aria-label="네트워크 측정 방식">
-            <button type="button" class="measurement-tab is-active" data-measurement-mode="simple" aria-selected="true">HTTP 용량 기준</button>
-            <button type="button" class="measurement-tab" data-measurement-mode="sustained" aria-selected="false">HTTP 시간 기준</button>
+            <button type="button" class="measurement-tab is-active" data-measurement-mode="http" aria-selected="true">HTTP 전송 측정</button>
             <button type="button" class="measurement-tab" data-measurement-mode="probe" aria-selected="false">TCP 정밀 측정</button>
           </div>
 
-          <div data-measurement-control="simple">
-            <label>
-              <span>측정 데이터량</span>
-              <select id="network-size" data-network-size>
-                {% for size_mb in network_check_size_options %}
-                  <option value="{{ size_mb }}">{{ size_mb }}MB</option>
-                {% endfor %}
-              </select>
-            </label>
-
-            <div class="network-actions">
-              <button type="button" class="secondary" data-check-action="upload">업로드 측정</button>
-              <button type="button" class="secondary" data-check-action="download">다운로드 측정</button>
-              <button type="button" class="primary" data-check-action="full">전체 측정</button>
-              <button type="button" class="secondary" data-cancel-check disabled hidden>측정 취소</button>
-            </div>
-
-            <div class="notice warning compact-notice">
-              1024MB 측정은 사내망과 서버 PC 상태에 따라 시간이 오래 걸릴 수 있습니다.
-            </div>
-          </div>
-
-          <div data-measurement-control="sustained" hidden>
-            <label>
-              <span>본 측정 시간</span>
-              <select data-sustained-duration>
-                <option value="10">10초</option>
-                <option value="30">30초</option>
-              </select>
-            </label>
-
+          <div data-measurement-control="http">
             <fieldset class="control-group">
-              <legend>HTTP 연결</legend>
+              <legend>측정 종료 기준</legend>
               <div class="segment-control">
-                <button type="button" class="is-active" data-sustained-stream="1" aria-pressed="true">1개</button>
-                <button type="button" data-sustained-stream="4" aria-pressed="false">4개</button>
+                <button type="button" class="is-active" data-http-criterion="simple" aria-pressed="true">데이터량</button>
+                <button type="button" data-http-criterion="sustained" aria-pressed="false">측정 시간</button>
               </div>
             </fieldset>
 
-            <div class="network-actions">
-              <button type="button" class="secondary" data-sustained-action="upload">업로드 측정</button>
-              <button type="button" class="secondary" data-sustained-action="download">다운로드 측정</button>
-              <button type="button" class="primary" data-sustained-action="full">전체 측정</button>
-              <button type="button" class="secondary" data-sustained-cancel disabled hidden>측정 취소</button>
+            <div data-http-criterion-control="simple">
+              <label>
+                <span>측정 데이터량</span>
+                <select id="network-size" data-network-size>
+                  {% for size_mb in network_check_size_options %}
+                    <option value="{{ size_mb }}">{{ size_mb }}MB</option>
+                  {% endfor %}
+                </select>
+              </label>
+
+              <div class="network-actions">
+                <button type="button" class="secondary" data-check-action="upload">업로드 측정</button>
+                <button type="button" class="secondary" data-check-action="download">다운로드 측정</button>
+                <button type="button" class="primary" data-check-action="full">전체 측정</button>
+                <button type="button" class="secondary" data-cancel-check disabled hidden>측정 취소</button>
+              </div>
+
+              <div class="notice warning compact-notice">
+                1024MB 측정은 사내망과 서버 PC 상태에 따라 시간이 오래 걸릴 수 있습니다.
+              </div>
             </div>
 
-            <div class="notice warning compact-notice">
-              이 기능은 브라우저의 HTTP 전송 성능을 측정합니다. TCP·UDP 정밀 측정이나 iperf 결과와는 다릅니다.
+            <div data-http-criterion-control="sustained" hidden>
+              <label>
+                <span>본 측정 시간</span>
+                <select data-sustained-duration>
+                  <option value="10">10초</option>
+                  <option value="30">30초</option>
+                </select>
+              </label>
+
+              <div class="network-actions">
+                <button type="button" class="secondary" data-sustained-action="upload">업로드 측정</button>
+                <button type="button" class="secondary" data-sustained-action="download">다운로드 측정</button>
+                <button type="button" class="primary" data-sustained-action="full">전체 측정</button>
+                <button type="button" class="secondary" data-sustained-cancel disabled hidden>측정 취소</button>
+              </div>
+
+              <div class="notice warning compact-notice">
+                이 기능은 HTTP 연결 1개로 브라우저의 시간당 전송 성능을 측정합니다. TCP·UDP 정밀 측정이나 iperf 결과와는 다릅니다.
+              </div>
             </div>
           </div>
 
@@ -277,88 +278,93 @@
         </section>
 
         <section class="panel network-result-panel" aria-live="polite">
-          <div data-measurement-result="simple">
-            <div class="section-title">
-              <h2>HTTP 용량 기준 측정 결과</h2>
-              <span data-network-status>대기</span>
+          <div data-measurement-result="http">
+            <div data-http-criterion-result="simple">
+              <div class="section-title">
+                <h2>데이터량 기준 결과</h2>
+                <span data-network-status>대기</span>
+              </div>
+
+              <div class="progress-track" aria-hidden="true">
+                <div class="progress-bar" data-progress-bar></div>
+              </div>
+
+              <dl class="metric-grid">
+                <div>
+                  <dt>진행률</dt>
+                  <dd data-progress-text>0%</dd>
+                </div>
+                <div>
+                  <dt>현재 평균 속도</dt>
+                  <dd data-average-speed>-</dd>
+                </div>
+                <div>
+                  <dt>최근 전송 속도</dt>
+                  <dd data-interval-speed>-</dd>
+                </div>
+                <div>
+                  <dt>측정 요약</dt>
+                  <dd data-summary>-</dd>
+                </div>
+              </dl>
+
+              <div class="result-list transfer-result-list" data-result-list></div>
+              <p class="measurement-explanation">
+                Mbps는 네트워크 속도, MB/s는 1초 동안 전송한 파일 용량입니다. 1GB 예상 시간은 현재 평균 속도가 유지된다는 가정의 참고값입니다.
+              </p>
             </div>
 
-            <div class="progress-track" aria-hidden="true">
-              <div class="progress-bar" data-progress-bar></div>
-            </div>
+            <div data-http-criterion-result="sustained" hidden>
+              <div class="section-title">
+                <h2>측정 시간 기준 결과</h2>
+                <span data-sustained-status>대기</span>
+              </div>
 
-            <dl class="metric-grid">
-              <div>
-                <dt>진행률</dt>
-                <dd data-progress-text>0%</dd>
+              <div class="progress-track" aria-hidden="true">
+                <div class="progress-bar" data-sustained-progress-bar></div>
               </div>
-              <div>
-                <dt>평균 속도</dt>
-                <dd data-average-speed>-</dd>
-              </div>
-              <div>
-                <dt>구간 속도</dt>
-                <dd data-interval-speed>-</dd>
-              </div>
-              <div>
-                <dt>완료 결과</dt>
-                <dd data-summary>-</dd>
-              </div>
-            </dl>
 
-            <div class="result-list" data-result-list></div>
-          </div>
+              <div class="sustained-phase" data-sustained-phase>대기</div>
 
-          <div data-measurement-result="sustained" hidden>
-            <div class="section-title">
-              <h2>HTTP 시간 기준 측정 결과</h2>
-              <span data-sustained-status>대기</span>
-            </div>
+              <dl class="metric-grid sustained-metrics">
+                <div>
+                  <dt>HTTP 응답시간</dt>
+                  <dd data-sustained-latency>-</dd>
+                </div>
+                <div>
+                  <dt>평균 속도</dt>
+                  <dd data-sustained-average>-</dd>
+                </div>
+                <div>
+                  <dt>현재 속도</dt>
+                  <dd data-sustained-current>-</dd>
+                </div>
+                <div>
+                  <dt>최소 / 최대</dt>
+                  <dd data-sustained-range>-</dd>
+                </div>
+                <div>
+                  <dt>중앙값</dt>
+                  <dd data-sustained-median>-</dd>
+                </div>
+                <div>
+                  <dt>변동률</dt>
+                  <dd data-sustained-variability>-</dd>
+                </div>
+              </dl>
 
-            <div class="progress-track" aria-hidden="true">
-              <div class="progress-bar" data-sustained-progress-bar></div>
-            </div>
+              <div class="throughput-chart">
+                <canvas data-sustained-chart width="900" height="280" aria-label="1초 구간 HTTP 처리량 그래프"></canvas>
+                <div class="chart-legend">
+                  <span><i class="legend-upload"></i>업로드</span>
+                  <span><i class="legend-download"></i>다운로드</span>
+                </div>
+              </div>
 
-            <div class="sustained-phase" data-sustained-phase>대기</div>
-
-            <dl class="metric-grid sustained-metrics">
-              <div>
-                <dt>HTTP 응답시간</dt>
-                <dd data-sustained-latency>-</dd>
+              <div class="result-list" data-sustained-result-list></div>
+              <div class="actions sustained-result-actions">
+                <a class="secondary" data-sustained-excel hidden>Excel 결과 받기</a>
               </div>
-              <div>
-                <dt>평균 속도</dt>
-                <dd data-sustained-average>-</dd>
-              </div>
-              <div>
-                <dt>현재 속도</dt>
-                <dd data-sustained-current>-</dd>
-              </div>
-              <div>
-                <dt>최소 / 최대</dt>
-                <dd data-sustained-range>-</dd>
-              </div>
-              <div>
-                <dt>중앙값</dt>
-                <dd data-sustained-median>-</dd>
-              </div>
-              <div>
-                <dt>변동률</dt>
-                <dd data-sustained-variability>-</dd>
-              </div>
-            </dl>
-
-            <div class="throughput-chart">
-              <canvas data-sustained-chart width="900" height="280" aria-label="1초 구간 HTTP 처리량 그래프"></canvas>
-              <div class="chart-legend">
-                <span><i class="legend-upload"></i>업로드</span>
-                <span><i class="legend-download"></i>다운로드</span>
-              </div>
-            </div>
-
-            <div class="result-list" data-sustained-result-list></div>
-            <div class="actions sustained-result-actions">
-              <a class="secondary" data-sustained-excel hidden>Excel 결과 받기</a>
             </div>
           </div>
 
@@ -393,7 +399,7 @@
 
             <div class="result-list" data-probe-result-list></div>
             <div class="actions sustained-result-actions">
-              <a class="secondary" data-probe-json hidden>상세 JSON 받기</a>
+              <a class="secondary" data-probe-excel hidden>Excel 결과 받기</a>
             </div>
           </div>
         </section>

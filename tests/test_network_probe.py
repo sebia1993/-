@@ -195,6 +195,7 @@ def test_full_probe_session_runs_both_directions_and_persists(tmp_path, monkeypa
         assert first["status"] == "attaching"
         completed = run_client_phase(service, registration, job, "download")
         assert completed["status"] == "completed"
+        assert completed["excel_url"] == f"/api/network-probe/results/{created['session_id']}.xlsx"
         assert completed["results"]["upload"]["receiver"]["bytes"] > 0
         assert completed["results"]["download"]["receiver"]["bytes"] > 0
         assert gate.is_available() is True
@@ -202,6 +203,7 @@ def test_full_probe_session_runs_both_directions_and_persists(tmp_path, monkeypa
         result_path = service.result_path_for(created["session_id"])
         saved = json.loads(result_path.read_text(encoding="utf-8"))
         assert saved["status"] == "completed"
+        assert service.saved_result_for(created["session_id"])["session_id"] == created["session_id"]
         assert "session_token" not in result_path.read_text(encoding="utf-8")
         rows = service.config.log_path.read_text(encoding="utf-8-sig").splitlines()
         assert len(rows) == 3

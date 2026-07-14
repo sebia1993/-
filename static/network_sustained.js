@@ -7,6 +7,7 @@
   const MEASUREMENT_PROGRESS_PERCENT = 95;
   const MAX_IN_PROGRESS_PERCENT = 99.9;
   const PROGRESS_LABEL_INTERVAL_MS = 100;
+  const HTTP_STREAM_COUNT = 1;
   const SERIES_COLORS = {
     upload: "#246b54",
     download: "#c15f2e",
@@ -227,8 +228,10 @@
     const modeButtons = root.querySelectorAll("[data-measurement-mode]");
     const controlPanels = root.querySelectorAll("[data-measurement-control]");
     const resultPanels = root.querySelectorAll("[data-measurement-result]");
+    const criterionButtons = root.querySelectorAll("[data-http-criterion]");
+    const criterionControlPanels = root.querySelectorAll("[data-http-criterion-control]");
+    const criterionResultPanels = root.querySelectorAll("[data-http-criterion-result]");
     const durationSelect = root.querySelector("[data-sustained-duration]");
-    const streamButtons = root.querySelectorAll("[data-sustained-stream]");
     const actionButtons = root.querySelectorAll("[data-sustained-action]");
     const cancelButton = root.querySelector("[data-sustained-cancel]");
     const statusText = root.querySelector("[data-sustained-status]");
@@ -244,7 +247,7 @@
     const excelLink = root.querySelector("[data-sustained-excel]");
     const chart = root.querySelector("[data-sustained-chart]");
 
-    let selectedStreams = 1;
+    let selectedCriterion = "simple";
     let running = false;
     let activeController = null;
     let activeSessionId = "";
@@ -269,7 +272,28 @@
       resultPanels.forEach((panel) => {
         panel.hidden = panel.dataset.measurementResult !== mode;
       });
-      if (mode === "sustained") {
+      if (mode === "http" && selectedCriterion === "sustained") {
+        window.requestAnimationFrame(drawChart);
+      }
+    }
+
+    function setHttpCriterion(criterion) {
+      if (running || root.dataset.simpleRunning === "true" || root.dataset.probeRunning === "true") {
+        return;
+      }
+      selectedCriterion = criterion;
+      criterionButtons.forEach((button) => {
+        const active = button.dataset.httpCriterion === criterion;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+      criterionControlPanels.forEach((panel) => {
+        panel.hidden = panel.dataset.httpCriterionControl !== criterion;
+      });
+      criterionResultPanels.forEach((panel) => {
+        panel.hidden = panel.dataset.httpCriterionResult !== criterion;
+      });
+      if (criterion === "sustained") {
         window.requestAnimationFrame(drawChart);
       }
     }
@@ -280,7 +304,7 @@
       actionButtons.forEach((button) => {
         button.disabled = nextRunning;
       });
-      streamButtons.forEach((button) => {
+      criterionButtons.forEach((button) => {
         button.disabled = nextRunning;
       });
       modeButtons.forEach((button) => {
@@ -398,7 +422,7 @@
         }
       }
 
-      const workers = Promise.all(Array.from({ length: selectedStreams }, (_, index) => worker(index))).finally(() => {
+      const workers = Promise.all(Array.from({ length: HTTP_STREAM_COUNT }, (_, index) => worker(index))).finally(() => {
         workersFinished = true;
       });
 
@@ -490,7 +514,7 @@
         }
       }
 
-      await Promise.all(Array.from({ length: selectedStreams }, (_, index) => worker(index)));
+      await Promise.all(Array.from({ length: HTTP_STREAM_COUNT }, (_, index) => worker(index)));
       const endedAt = performance.now();
       if (phase === "measure" && endedAt - previousSampleAt >= 250) {
         appendLiveSample("download", totalBytes - previousBytes, (endedAt - previousSampleAt) / 1000);
@@ -508,7 +532,7 @@
     }
 
     function chooseUploadChunk(warmupBytes, warmupSeconds, maxChunkBytes) {
-      const estimatedPerStreamBytesPerSecond = warmupBytes / Math.max(warmupSeconds, 0.001) / selectedStreams;
+      const estimatedPerStreamBytesPerSecond = warmupBytes / Math.max(warmupSeconds, 0.001) / HTTP_STREAM_COUNT;
       const targetBytes = estimatedPerStreamBytesPerSecond * TARGET_CHUNK_SECONDS;
       const clamped = Math.max(MIN_UPLOAD_CHUNK, Math.min(maxChunkBytes, targetBytes));
       return Math.max(MIN_UPLOAD_CHUNK, Math.round(clamped / UPLOAD_CHUNK_STEP) * UPLOAD_CHUNK_STEP);
@@ -588,8 +612,8 @@
       }
       const durationSeconds = Number.parseInt(durationSelect.value, 10);
       if (
-        (durationSeconds === 30 || selectedStreams === 4) &&
-        !window.confirm(`${durationSeconds}초 또는 ${selectedStreams}개 HTTP 연결 측정은 사내망과 서버 PC에 부하를 줄 수 있습니다. 계속할까요?`)
+        durationSeconds === 30 &&
+        !window.confirm("30초 HTTP 측정은 사내망과 서버 PC에 부하를 줄 수 있습니다. 계속할까요?")
       ) {
         return;
       }
@@ -611,7 +635,7 @@
             body: JSON.stringify({
               direction,
               duration_seconds: durationSeconds,
-              stream_count: selectedStreams,
+              stream_count: HTTP_STREAM_COUNT,
             }),
           },
           "HTTP 시간 기준 측정 시작"
@@ -723,18 +747,8 @@
     modeButtons.forEach((button) => {
       button.addEventListener("click", () => setMeasurementMode(button.dataset.measurementMode));
     });
-    streamButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        if (running) {
-          return;
-        }
-        selectedStreams = Number.parseInt(button.dataset.sustainedStream, 10);
-        streamButtons.forEach((item) => {
-          const active = item === button;
-          item.classList.toggle("is-active", active);
-          item.setAttribute("aria-pressed", active ? "true" : "false");
-        });
-      });
+    criterionButtons.forEach((button) => {
+      button.addEventListener("click", () => setHttpCriterion(button.dataset.httpCriterion));
     });
     actionButtons.forEach((button) => {
       button.addEventListener("click", () => runAction(button.dataset.sustainedAction));
@@ -747,7 +761,8 @@
       }
     });
     window.addEventListener("resize", drawChart);
-    setMeasurementMode("simple");
+    setHttpCriterion("simple");
+    setMeasurementMode("http");
   }
 
   initSustainedCheck();

@@ -13,6 +13,12 @@ from .client_package import (
     resolve_client_server_url,
     runtime_client_executable,
 )
+from .excel import (
+    EXCEL_MIME_TYPE,
+    ProbeExcelError,
+    build_probe_excel,
+    build_probe_excel_filename,
+)
 from .service import ProbeService, ProbeServiceError
 
 
@@ -194,5 +200,27 @@ def create_probe_blueprint(
             mimetype="application/json",
             headers={"Content-Disposition": f'attachment; filename="network-probe-{session_id}.json"'},
         )
+
+    @blueprint.get("/results/<session_id>.xlsx")
+    def result_excel(session_id: str):
+        try:
+            saved = service.saved_result_for(session_id)
+            workbook = build_probe_excel(saved)
+            filename = build_probe_excel_filename(saved)
+        except ProbeServiceError as exc:
+            return error_response(exc)
+        except ProbeExcelError as exc:
+            return jsonify({"error": str(exc)}), 500
+        response = send_file(
+            io.BytesIO(workbook),
+            mimetype=EXCEL_MIME_TYPE,
+            as_attachment=True,
+            download_name=filename,
+            max_age=0,
+            conditional=False,
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     return blueprint

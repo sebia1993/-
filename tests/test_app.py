@@ -318,15 +318,21 @@ def test_network_check_tab_and_size_options(app_client):
     assert "네트워크 체크" in body
     assert "1024MB" in body
     assert "평균 속도" in body
-    assert "구간 속도" in body
+    assert "최근 전송 속도" in body
     assert "측정 취소" in body
-    assert "HTTP 용량 기준" in body
-    assert "HTTP 시간 기준" in body
+    assert "HTTP 전송 측정" in body
+    assert "측정 종료 기준" in body
+    assert "데이터량" in body
+    assert "측정 시간" in body
     assert "HTTP 응답시간" in body
     assert "data-sustained-action" in body
     assert "Excel 결과 받기" in body
     assert "data-sustained-excel" in body
+    assert "data-probe-excel" in body
+    assert "data-probe-json" not in body
     assert "data-sustained-json" not in body
+    assert "data-sustained-stream" not in body
+    assert "1GB 예상 시간" in body
     assert "/network-check/upload" in body
     assert "/network-check/download" in body
 
@@ -487,6 +493,8 @@ def test_network_check_js_has_speed_and_cancel_guards():
     assert "data-average-speed" in script
     assert "data-interval-speed" in script
     assert "data-cancel-check" in script
+    assert "formatOneGigabyteEstimate" in script
+    assert "전송한 데이터" in script
 
 
 def test_sustained_network_js_uses_regular_post_chunks():
@@ -511,6 +519,10 @@ def test_sustained_network_js_uses_regular_post_chunks():
     assert "result.status === \"success\"" in script
     assert "progress.terminate(cancellationRequested" in script
     assert "function setPhase(" not in script
+    assert "HTTP_STREAM_COUNT = 1" in script
+    assert "stream_count: HTTP_STREAM_COUNT" in script
+    assert "data-sustained-stream" not in script
+    assert "selectedStreams" not in script
 
 
 def test_sustained_progress_uses_its_own_time_based_style():

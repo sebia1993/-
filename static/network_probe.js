@@ -51,7 +51,8 @@
     const retransText = root.querySelector("[data-probe-retrans]");
     const clientText = root.querySelector("[data-probe-client]");
     const resultList = root.querySelector("[data-probe-result-list]");
-    const jsonLink = root.querySelector("[data-probe-json]");
+    const excelLink = root.querySelector("[data-probe-excel]");
+    const criterionButtons = root.querySelectorAll("[data-http-criterion]");
     const chart = root.querySelector("[data-probe-chart]");
 
     let serviceAvailable = false;
@@ -67,6 +68,7 @@
       streamButtons.forEach((button) => { button.disabled = !enabled; });
       actionButtons.forEach((button) => { button.disabled = !enabled; });
       modeButtons.forEach((button) => { button.disabled = running; });
+      criterionButtons.forEach((button) => { button.disabled = running; });
       cancelButton.hidden = !running;
       cancelButton.disabled = !running;
       root.dataset.probeRunning = running ? "true" : "";
@@ -83,8 +85,8 @@
       retransText.textContent = "-";
       clientText.textContent = "-";
       resultList.innerHTML = "";
-      jsonLink.hidden = true;
-      jsonLink.removeAttribute("href");
+      excelLink.hidden = true;
+      excelLink.removeAttribute("href");
       graphSeries = { upload: [], download: [] };
       drawChart();
     }
@@ -197,9 +199,10 @@
       Object.entries(payload.results || {}).forEach(([direction, result]) => renderPhaseResult(direction, result));
       drawChart();
       if (payload.error) phaseText.textContent = payload.error;
-      if (payload.result_url) {
-        jsonLink.href = payload.result_url;
-        jsonLink.hidden = false;
+      if (payload.excel_url) {
+        excelLink.href = payload.excel_url;
+        excelLink.hidden = false;
+        excelLink.setAttribute("download", "");
       }
       if (["completed", "cancelled", "failed"].includes(payload.status)) {
         statusText.textContent = payload.status === "completed" ? "완료" : payload.status === "cancelled" ? "취소" : "실패";
