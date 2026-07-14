@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+from configparser import ConfigParser, Error as ConfigParserError
 from pathlib import PurePosixPath
 from zipfile import ZipFile
 
@@ -90,6 +91,21 @@ def validate_server_launcher(zip_file: ZipFile) -> list[str]:
     return errors
 
 
+def validate_default_config(zip_file: ZipFile) -> list[str]:
+    parser = ConfigParser()
+    try:
+        parser.read_string(zip_file.read("config.ini").decode("utf-8-sig"))
+        if parser.getint("app", "CONFIG_VERSION", fallback=0) < 2:
+            return ["config.ini must use CONFIG_VERSION=2 or newer"]
+        if not parser.getboolean("network_probe", "ENABLED", fallback=False):
+            return ["config.ini must enable TCP probe by default"]
+        if not 1 <= parser.getint("network_probe", "PORT", fallback=0) <= 65535:
+            return ["config.ini has an invalid TCP probe port"]
+    except (ConfigParserError, KeyError, ValueError):
+        return ["config.ini has invalid default settings"]
+    return []
+
+
 def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
     errors = []
     with ZipFile(zip_path) as archive:
@@ -149,6 +165,8 @@ def verify_zip(zip_path: str, version: str | None = None) -> list[str]:
             errors.extend(validate_manual_probe_launcher(archive))
         if "start_internal_upload.cmd" in names:
             errors.extend(validate_server_launcher(archive))
+        if "config.ini" in names:
+            errors.extend(validate_default_config(archive))
     return errors
 
 

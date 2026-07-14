@@ -32,9 +32,13 @@ from startup_ports import (
     PortChangeDeclined,
     StartupPortError,
     check_windows_firewall_port,
+    config_requires_probe_enable_migration,
     firewall_add_command,
     is_existing_instance,
+    migrate_config,
     persist_port_change,
+    persist_probe_port_change,
+    resolve_probe_port,
     resolve_startup_port,
     rewrite_base_url_port,
 )
@@ -129,6 +133,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
 
     parser = ConfigParser()
     parser[CONFIG_SECTION] = {
+        "CONFIG_VERSION": "2",
         "HOST": "0.0.0.0",
         "PORT": "8000",
         "BASE_URL": "",
@@ -137,7 +142,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
         "RECENT_LIMIT": "50",
     }
     parser[NETWORK_PROBE_SECTION] = {
-        "ENABLED": "false",
+        "ENABLED": "true",
         "PORT": "5201",
     }
     if path.exists():
@@ -161,7 +166,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
         network_check_log_path=app_root / "data" / "network_check_log.csv",
         network_check_session_log_path=app_root / "data" / "network_check_session_log.csv",
         network_check_results_root=app_root / "data" / "network_check_results",
-        network_probe_enabled=probe_section.getboolean("ENABLED", fallback=False),
+        network_probe_enabled=probe_section.getboolean("ENABLED", fallback=True),
         network_probe_port=max(1, min(65535, probe_section.getint("PORT", fallback=5201))),
         network_probe_log_path=app_root / "data" / "network_probe_log.csv",
         network_probe_results_root=app_root / "data" / "network_probe_results",
@@ -750,7 +755,7 @@ def create_app(
                     break
                 bytes_received += len(chunk)
                 if bytes_received > expected_bytes:
-                    error_message = "요청 크기가 선택한 테스트 크기보다 큽니다."
+                    error_message = "요청 크기가 선택한 측정 데이터량보다 큽니다."
                     status_code = 400
                     break
 
@@ -853,7 +858,7 @@ def create_app(
         payload = finalize_upload_session(
             failed_session,
             status="failure",
-            error="요청 크기가 선택한 테스트 크기보다 큽니다.",
+            error="요청 크기가 선택한 측정 데이터량보다 큽니다.",
         )
         return jsonify(payload), 400
 
@@ -946,7 +951,27 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_probe_self_check(runtime_client_executable())
 
+    resolved_config_path = (
+        Path(config_path).resolve() if config_path else APP_ROOT / "config.ini"
+    )
+    migration_required = config_requires_probe_enable_migration(resolved_config_path)
+    migration_failed = False
+    if migration_required:
+        try:
+            migration = migrate_config(resolved_config_path)
+            if migration.probe_enabled_changed:
+                print("기존 설정을 업데이트해 TCP 정밀 측정을 기본 활성화했습니다.")
+        except OSError as exc:
+            migration_failed = True
+            print(
+                f"설정 마이그레이션을 config.ini에 저장하지 못했습니다: {exc}",
+                file=sys.stderr,
+            )
+            print("현재 실행에서는 TCP 정밀 측정을 활성화합니다.", file=sys.stderr)
+
     configured = load_config(config_path)
+    if migration_required and migration_failed:
+        configured = replace(configured, network_probe_enabled=True)
     ensure_directories(configured)
     try:
         resolution = resolve_startup_port(
@@ -980,12 +1005,30 @@ def main(argv: list[str] | None = None) -> int:
         port=resolution.selected_port,
         base_url=runtime_base_url.rstrip("/"),
     )
+    probe_port_resolution = None
+    probe_port_error = ""
+    if active_config.network_probe_enabled:
+        try:
+            probe_port_resolution = resolve_probe_port(
+                active_config.host,
+                active_config.network_probe_port,
+                excluded_ports={active_config.port},
+            )
+            active_config = replace(
+                active_config,
+                network_probe_port=probe_port_resolution.selected_port,
+            )
+        except (PortChangeDeclined, StartupPortError) as exc:
+            probe_port_error = str(exc)
+
     measurement_gate = NetworkMeasurementGate()
     probe_service = ProbeService(
         config=build_probe_config(active_config),
         measurement_gate=measurement_gate,
         normalize_ip=normalize_ip,
     )
+    if probe_port_error:
+        probe_service.start_error = probe_port_error
     web_server = None
     try:
         flask_app = create_app(
@@ -1032,13 +1075,30 @@ def main(argv: list[str] | None = None) -> int:
             print_firewall_status(active_config.port)
 
         if active_config.network_probe_enabled:
-            if active_config.network_probe_port == active_config.port:
-                probe_service.start_error = "웹 포트와 TCP 측정 포트는 서로 달라야 합니다."
-                print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
+            if probe_port_error:
+                print(f"TCP 정밀 측정 서버 시작 실패: {probe_port_error}", file=sys.stderr)
+                print("파일 업로드 웹 서버는 계속 실행합니다.", file=sys.stderr)
             elif probe_service.start():
                 print(f"TCP 정밀 측정 서버가 {active_config.network_probe_port} 포트에서 시작되었습니다.")
+                if probe_port_resolution and probe_port_resolution.changed:
+                    try:
+                        persist_probe_port_change(
+                            resolved_config_path,
+                            active_config.network_probe_port,
+                        )
+                        print(
+                            f"TCP 측정 포트를 {probe_port_resolution.configured_port}에서 "
+                            f"{active_config.network_probe_port}(으)로 변경하고 config.ini에 저장했습니다."
+                        )
+                    except OSError as exc:
+                        print(
+                            f"변경된 TCP 측정 포트를 config.ini에 저장하지 못했습니다: {exc}",
+                            file=sys.stderr,
+                        )
+                print_firewall_status(active_config.network_probe_port)
             else:
                 print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
+                print("파일 업로드 웹 서버는 계속 실행합니다.", file=sys.stderr)
 
         print_server_addresses(active_config)
         print("종료하려면 Ctrl+C를 누르세요.")

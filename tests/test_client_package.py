@@ -104,6 +104,7 @@ def test_build_client_package_contains_only_autoconnect_client_files(tmp_path):
     assert "set /p" not in command.lower()
     assert server_url in readme
     assert "config.ini" in readme
+    assert "TCP 측정 포트는 서버가 자동으로 전달" in readme
 
 
 def test_build_client_package_rejects_missing_executable(tmp_path):

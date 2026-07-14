@@ -177,14 +177,14 @@
           <h2>네트워크 체크</h2>
 
           <div class="measurement-tabs" role="tablist" aria-label="네트워크 측정 방식">
-            <button type="button" class="measurement-tab is-active" data-measurement-mode="simple" aria-selected="true">간편 측정</button>
-            <button type="button" class="measurement-tab" data-measurement-mode="sustained" aria-selected="false">지속 측정</button>
+            <button type="button" class="measurement-tab is-active" data-measurement-mode="simple" aria-selected="true">HTTP 용량 기준</button>
+            <button type="button" class="measurement-tab" data-measurement-mode="sustained" aria-selected="false">HTTP 시간 기준</button>
             <button type="button" class="measurement-tab" data-measurement-mode="probe" aria-selected="false">TCP 정밀 측정</button>
           </div>
 
           <div data-measurement-control="simple">
             <label>
-              <span>테스트 크기</span>
+              <span>측정 데이터량</span>
               <select id="network-size" data-network-size>
                 {% for size_mb in network_check_size_options %}
                   <option value="{{ size_mb }}">{{ size_mb }}MB</option>
@@ -239,9 +239,9 @@
             </div>
 
             <div class="probe-client-package">
-              <a class="secondary" data-probe-client-package aria-disabled="true">Windows 클라이언트 ZIP 받기</a>
+              <a class="primary" data-probe-client-package aria-disabled="true">Windows 클라이언트 ZIP 받기</a>
               <p data-probe-client-package-address>자동 연결 주소 확인 중</p>
-              <p class="muted">압축 해제 후 CMD만 실행하세요. 서버 IP 또는 웹 포트가 바뀌면 ZIP을 다시 받으세요.</p>
+              <p class="muted">압축 해제 후 CMD만 실행하세요. TCP 포트는 자동 전달되며, 서버 IP 또는 웹 포트가 바뀔 때만 ZIP을 다시 받으면 됩니다.</p>
             </div>
 
             <label>
@@ -279,7 +279,7 @@
         <section class="panel network-result-panel" aria-live="polite">
           <div data-measurement-result="simple">
             <div class="section-title">
-              <h2>간편 측정 결과</h2>
+              <h2>HTTP 용량 기준 측정 결과</h2>
               <span data-network-status>대기</span>
             </div>
 
@@ -311,7 +311,7 @@
 
           <div data-measurement-result="sustained" hidden>
             <div class="section-title">
-              <h2>지속 측정 결과</h2>
+              <h2>HTTP 시간 기준 측정 결과</h2>
               <span data-sustained-status>대기</span>
             </div>
 

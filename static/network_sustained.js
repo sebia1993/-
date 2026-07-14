@@ -197,7 +197,7 @@
 
     function complete() {
       stop();
-      setPercent(100, "HTTP 지속 측정 완료", "", { allowComplete: true, forceLabel: true });
+      setPercent(100, "HTTP 시간 기준 측정 완료", "", { allowComplete: true, forceLabel: true });
     }
 
     function terminate(statusLabel, message) {
@@ -614,7 +614,7 @@
               stream_count: selectedStreams,
             }),
           },
-          "지속 측정 시작"
+          "HTTP 시간 기준 측정 시작"
         );
         activeSessionId = session.session_id;
         statusText.textContent = "측정 중";

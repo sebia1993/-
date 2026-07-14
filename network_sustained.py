@@ -181,7 +181,7 @@ class SustainedCheckManager:
         session_id = uuid.uuid4().hex
         with self.lock:
             if self.active_session is not None:
-                raise SustainedCheckError("다른 지속 측정이 진행 중입니다.", 409)
+                raise SustainedCheckError("다른 HTTP 시간 기준 측정이 진행 중입니다.", 409)
             if self.measurement_gate is not None and not self.measurement_gate.acquire(
                 "http_sustained", session_id
             ):
@@ -202,7 +202,7 @@ class SustainedCheckManager:
     def _require_session(self, session_id: str, client_ip: str) -> SustainedSession:
         session = self.active_session
         if session is None or session.session_id != session_id:
-            raise SustainedCheckError("지속 측정 세션을 찾을 수 없습니다.", 404)
+            raise SustainedCheckError("HTTP 시간 기준 측정 세션을 찾을 수 없습니다.", 404)
         if session.client_ip != client_ip:
             raise SustainedCheckError("이 측정 세션은 다른 IP에서 사용할 수 없습니다.", 403)
         session.last_activity_at = self.clock()
@@ -313,7 +313,7 @@ class SustainedCheckManager:
                 return
             result = self._build_result(
                 session,
-                {"error": "브라우저 연결이 끊어져 지속 측정 세션이 만료되었습니다."},
+                {"error": "브라우저 연결이 끊어져 HTTP 시간 기준 측정 세션이 만료되었습니다."},
                 status="failure",
             )
             try:

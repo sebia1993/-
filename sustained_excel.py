@@ -113,7 +113,7 @@ def _build_summary_sheet(workbook: Workbook, result: dict[str, Any]) -> None:
     sheet = workbook.active
     sheet.title = "측정 요약"
     sheet.sheet_view.showGridLines = False
-    _style_title(sheet, "웹 HTTP 지속 측정 결과", end_column=10)
+    _style_title(sheet, "HTTP 시간 기준 측정 결과", end_column=10)
 
     requested = _as_mapping(result.get("requested"))
     latency = _as_mapping(result.get("http_latency"))
@@ -297,7 +297,7 @@ def build_sustained_excel(result: dict[str, Any]) -> bytes:
     try:
         workbook = Workbook()
         workbook.properties.creator = "InternalUpload"
-        workbook.properties.title = "웹 HTTP 지속 측정 결과"
+        workbook.properties.title = "HTTP 시간 기준 측정 결과"
         _build_summary_sheet(workbook, result)
         _build_intervals_sheet(workbook, result)
         output = BytesIO()

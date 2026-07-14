@@ -114,7 +114,7 @@ def test_excel_report_contains_summary_intervals_and_chart():
     assert workbook.sheetnames == ["측정 요약", "구간별 속도"]
     summary = workbook["측정 요약"]
     intervals = workbook["구간별 속도"]
-    assert summary["A1"].value == "웹 HTTP 지속 측정 결과"
+    assert summary["A1"].value == "HTTP 시간 기준 측정 결과"
     assert summary["B4"].value == "성공"
     assert summary["D4"].value == "0123456789abcdef0123456789abcdef"
     assert summary["B7"].value == "전체"

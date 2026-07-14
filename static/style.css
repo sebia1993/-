@@ -229,11 +229,11 @@ select:disabled {
   border-bottom: 1px solid var(--line);
 }
 
-.probe-client-package .secondary {
+.probe-client-package a {
   width: 100%;
 }
 
-.probe-client-package .secondary.is-disabled {
+.probe-client-package a.is-disabled {
   pointer-events: none;
   cursor: not-allowed;
   opacity: 0.65;
@@ -327,6 +327,14 @@ select:disabled {
   background: #ffffff;
   border-color: #aeb8a7;
   color: #26352d;
+}
+
+.measurement-tab {
+  min-height: 50px;
+  padding: 6px 4px;
+  font-size: 13px;
+  line-height: 1.25;
+  white-space: normal;
 }
 
 .measurement-tab.is-active,

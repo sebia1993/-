@@ -78,6 +78,13 @@ def test_loopback_url_warning_detection():
     assert not is_loopback_url("http://10.10.10.25:8000/download/a")
 
 
+def test_tcp_probe_is_enabled_by_default_when_setting_is_missing(tmp_path):
+    config = load_config(write_config(tmp_path))
+
+    assert config.network_probe_enabled is True
+    assert config.network_probe_port == 5201
+
+
 def test_storage_path_rejects_outside_root(tmp_path):
     config = load_config(write_config(tmp_path))
     with pytest.raises(ValueError):
@@ -206,7 +213,8 @@ def test_network_check_tab_and_size_options(app_client):
     assert "평균 속도" in body
     assert "구간 속도" in body
     assert "측정 취소" in body
-    assert "지속 측정" in body
+    assert "HTTP 용량 기준" in body
+    assert "HTTP 시간 기준" in body
     assert "HTTP 응답시간" in body
     assert "data-sustained-action" in body
     assert "Excel 결과 받기" in body
@@ -435,6 +443,7 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
                 "README_START_HERE_KO.txt",
                 "start_internal_upload.cmd",
                 "start_tcp_probe_client.cmd",
+                "config.ini",
                 "data/upload_log.csv",
                 "data/network_check_log.csv",
                 "data/network_check_session_log.csv",
@@ -450,6 +459,10 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
         archive.writestr(
             "start_tcp_probe_client.cmd",
             'set /p "SERVER_URL=server: "\nInternalUpload.exe --probe-client --server "%SERVER_URL%"',
+        )
+        archive.writestr(
+            "config.ini",
+            "[app]\nCONFIG_VERSION=2\n\n[network_probe]\nENABLED=true\nPORT=5201\n",
         )
         archive.writestr("data/upload_log.csv", csv_header)
         archive.writestr("data/network_check_log.csv", network_csv_header)
