@@ -364,6 +364,24 @@ def test_sustained_network_js_uses_regular_post_chunks():
     assert "data-sustained-excel" in script
     assert "result.excel_url" in script
     assert "data-sustained-json" not in script
+    assert "LATENCY_PROGRESS_PERCENT = 5" in script
+    assert "MEASUREMENT_PROGRESS_PERCENT = 95" in script
+    assert "MAX_IN_PROGRESS_PERCENT = 99.9" in script
+    assert "createSustainedProgress" in script
+    assert "requestAnimationFrame(tick)" in script
+    assert "style.transform = `scaleX(" in script
+    assert "Math.max(currentPercent" in script
+    assert "result.status === \"success\"" in script
+    assert "progress.terminate(cancellationRequested" in script
+    assert "function setPhase(" not in script
+
+
+def test_sustained_progress_uses_its_own_time_based_style():
+    stylesheet = Path("static/style.css").read_text(encoding="utf-8")
+
+    assert ".progress-bar[data-sustained-progress-bar]" in stylesheet
+    assert "transform-origin: left center" in stylesheet
+    assert "transition: none" in stylesheet
 
 
 def test_windows_release_checksum_uses_portable_lf_line_ending():

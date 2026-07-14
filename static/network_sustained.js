@@ -3,6 +3,10 @@
   const MIN_UPLOAD_CHUNK = 256 * 1024;
   const TARGET_CHUNK_SECONDS = 0.25;
   const UPLOAD_CHUNK_STEP = 64 * 1024;
+  const LATENCY_PROGRESS_PERCENT = 5;
+  const MEASUREMENT_PROGRESS_PERCENT = 95;
+  const MAX_IN_PROGRESS_PERCENT = 99.9;
+  const PROGRESS_LABEL_INTERVAL_MS = 100;
   const SERIES_COLORS = {
     upload: "#246b54",
     download: "#c15f2e",
@@ -71,6 +75,149 @@
     return payload;
   }
 
+  function createSustainedProgress(progressBar, phaseText) {
+    let animationFrameId = 0;
+    let currentPercent = 0;
+    let completedMeasurementSeconds = 0;
+    let totalMeasurementSeconds = 0;
+    let activePhase = null;
+    let lastLabelUpdatedAt = 0;
+
+    function cancelAnimation() {
+      if (animationFrameId) {
+        window.cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      }
+    }
+
+    function setPercent(nextPercent, label, detail, options) {
+      const settings = options || {};
+      const upperBound = settings.allowComplete ? 100 : MAX_IN_PROGRESS_PERCENT;
+      const boundedPercent = Math.min(upperBound, Math.max(0, Number(nextPercent) || 0));
+      currentPercent = Math.max(currentPercent, boundedPercent);
+      progressBar.style.transform = `scaleX(${(currentPercent / 100).toFixed(4)})`;
+
+      const now = performance.now();
+      if (settings.forceLabel || now - lastLabelUpdatedAt >= PROGRESS_LABEL_INTERVAL_MS) {
+        phaseText.textContent = `${label} · 전체 ${currentPercent.toFixed(1)}%${detail ? ` · ${detail}` : ""}`;
+        lastLabelUpdatedAt = now;
+      }
+    }
+
+    function reset() {
+      cancelAnimation();
+      currentPercent = 0;
+      completedMeasurementSeconds = 0;
+      totalMeasurementSeconds = 0;
+      activePhase = null;
+      lastLabelUpdatedAt = 0;
+      progressBar.style.transform = "scaleX(0)";
+      phaseText.textContent = "HTTP 응답시간 측정 준비 · 전체 0.0%";
+    }
+
+    function setLatencyStep(completedSteps, totalSteps) {
+      const safeTotal = Math.max(1, Number(totalSteps) || 1);
+      const safeCompleted = Math.min(safeTotal, Math.max(0, Number(completedSteps) || 0));
+      setPercent(
+        (safeCompleted / safeTotal) * LATENCY_PROGRESS_PERCENT,
+        "HTTP 응답시간 확인",
+        `${safeCompleted} / ${safeTotal}회`,
+        { forceLabel: true }
+      );
+    }
+
+    function configure(direction, warmupSeconds, durationSeconds) {
+      const directionCount = direction === "full" ? 2 : 1;
+      const safeWarmup = Math.max(0, Number(warmupSeconds) || 0);
+      const safeDuration = Math.max(0, Number(durationSeconds) || 0);
+      completedMeasurementSeconds = 0;
+      totalMeasurementSeconds = directionCount * (safeWarmup + safeDuration);
+    }
+
+    function startPhase(label, durationSeconds) {
+      cancelAnimation();
+      const safeDuration = Math.max(0, Number(durationSeconds) || 0);
+      const safeTotal = Math.max(totalMeasurementSeconds, safeDuration, 0.001);
+      const startPercent =
+        LATENCY_PROGRESS_PERCENT +
+        (completedMeasurementSeconds / safeTotal) * MEASUREMENT_PROGRESS_PERCENT;
+      const endPercent =
+        LATENCY_PROGRESS_PERCENT +
+        ((completedMeasurementSeconds + safeDuration) / safeTotal) * MEASUREMENT_PROGRESS_PERCENT;
+      const phase = {
+        label,
+        durationSeconds: safeDuration,
+        startedAt: performance.now(),
+        startPercent,
+        endPercent,
+      };
+      activePhase = phase;
+
+      function tick(timestamp) {
+        if (activePhase !== phase) {
+          return;
+        }
+        const elapsedSeconds = Math.min(
+          Math.max((timestamp - phase.startedAt) / 1000, 0),
+          phase.durationSeconds
+        );
+        const fraction = phase.durationSeconds > 0 ? elapsedSeconds / phase.durationSeconds : 1;
+        const nextPercent = phase.startPercent + (phase.endPercent - phase.startPercent) * fraction;
+        setPercent(
+          nextPercent,
+          phase.label,
+          `${elapsedSeconds.toFixed(1)} / ${phase.durationSeconds.toFixed(0)}초`
+        );
+        if (elapsedSeconds < phase.durationSeconds) {
+          animationFrameId = window.requestAnimationFrame(tick);
+        } else {
+          animationFrameId = 0;
+        }
+      }
+
+      setPercent(startPercent, label, `0.0 / ${safeDuration.toFixed(0)}초`, { forceLabel: true });
+      animationFrameId = window.requestAnimationFrame(tick);
+    }
+
+    function finishPhase() {
+      if (!activePhase) {
+        return;
+      }
+      const phase = activePhase;
+      cancelAnimation();
+      completedMeasurementSeconds += phase.durationSeconds;
+      activePhase = null;
+      setPercent(phase.endPercent, `${phase.label} 완료`, "", { forceLabel: true });
+    }
+
+    function stop() {
+      cancelAnimation();
+      activePhase = null;
+    }
+
+    function complete() {
+      stop();
+      setPercent(100, "HTTP 지속 측정 완료", "", { allowComplete: true, forceLabel: true });
+    }
+
+    function terminate(statusLabel, message) {
+      stop();
+      phaseText.textContent = `${statusLabel} · 전체 ${currentPercent.toFixed(1)}%${message ? ` · ${message}` : ""}`;
+    }
+
+    return {
+      complete,
+      configure,
+      finishPhase,
+      getPercent: () => currentPercent,
+      reset,
+      setLatencyStep,
+      startPhase,
+      stop,
+      terminate,
+    };
+  }
+
   function initSustainedCheck() {
     const root = document.querySelector("[data-network-check]");
     if (!root || !root.dataset.sustainedSessionUrl) {
@@ -105,6 +252,7 @@
     let latencySamples = [];
     let clientResults = {};
     const graphSeries = { upload: [], download: [] };
+    const progress = createSustainedProgress(progressBar, phaseText);
 
     function setMeasurementMode(mode) {
       if (running || root.dataset.simpleRunning === "true" || root.dataset.probeRunning === "true") {
@@ -145,8 +293,7 @@
 
     function resetResult() {
       statusText.textContent = "준비";
-      phaseText.textContent = "HTTP 응답시간 측정 준비";
-      progressBar.style.width = "0%";
+      progress.reset();
       latencyText.textContent = "-";
       averageText.textContent = "-";
       currentText.textContent = "-";
@@ -163,16 +310,10 @@
       drawChart();
     }
 
-    function setPhase(label, elapsedSeconds, durationSeconds) {
-      phaseText.textContent = label;
-      const percent = durationSeconds > 0 ? Math.min(100, (elapsedSeconds / durationSeconds) * 100) : 0;
-      progressBar.style.width = `${percent.toFixed(1)}%`;
-    }
-
     async function measureLatency(signal) {
       statusText.textContent = "응답시간 측정 중";
-      phaseText.textContent = "HTTP 응답시간 확인";
       const samples = [];
+      progress.setLatencyStep(0, 6);
       for (let index = 0; index < 6; index += 1) {
         const startedAt = performance.now();
         await fetchJson(
@@ -184,6 +325,7 @@
         if (index > 0) {
           samples.push(elapsed);
         }
+        progress.setLatencyStep(index + 1, 6);
       }
       latencyText.textContent = `${median(samples).toFixed(2)} ms`;
       return samples;
@@ -232,6 +374,7 @@
       const deadline = startedAt + durationSeconds * 1000;
       const body = new Uint8Array(chunkSize);
       const phaseLabel = phase === "warmup" ? "업로드 워밍" : "업로드 본 측정";
+      progress.startPhase(phaseLabel, durationSeconds);
       let workersFinished = false;
       let previousBytes = 0;
       let previousSampleAt = startedAt;
@@ -264,7 +407,6 @@
         const status = await getStatus(signal);
         const now = performance.now();
         const elapsed = Math.min((now - startedAt) / 1000, durationSeconds);
-        setPhase(`${phaseLabel} ${elapsed.toFixed(1)} / ${durationSeconds.toFixed(0)}초`, elapsed, durationSeconds);
         if (phase === "measure" && now - previousSampleAt >= 900) {
           const phaseBytes = Number(status.phase_bytes);
           appendLiveSample("upload", phaseBytes - previousBytes, (now - previousSampleAt) / 1000);
@@ -283,7 +425,7 @@
           (endedAt - previousSampleAt) / 1000
         );
       }
-      setPhase(`${phaseLabel} 완료`, durationSeconds, durationSeconds);
+      progress.finishPhase();
       return {
         bytes_transferred: Number(finalStatus.phase_bytes),
         actual_duration_seconds: durationSeconds,
@@ -296,6 +438,7 @@
       const durationSeconds = Number(phaseInfo.duration_seconds);
       const startedAt = performance.now();
       const phaseLabel = phase === "warmup" ? "다운로드 워밍" : "다운로드 본 측정";
+      progress.startPhase(phaseLabel, durationSeconds);
       let totalBytes = 0;
       let previousBytes = 0;
       let previousSampleAt = startedAt;
@@ -335,7 +478,6 @@
             clientResults.download.bytes_transferred = totalBytes;
             clientResults.download.actual_duration_seconds = Math.max(elapsed, 0.001);
           }
-          setPhase(`${phaseLabel} ${elapsed.toFixed(1)} / ${durationSeconds.toFixed(0)}초`, elapsed, durationSeconds);
           if (phase === "measure" && now - previousSampleAt >= 900) {
             appendLiveSample("download", totalBytes - previousBytes, (now - previousSampleAt) / 1000);
             clientResults.download.intervals = graphSeries.download.map((point) => ({
@@ -353,7 +495,7 @@
       if (phase === "measure" && endedAt - previousSampleAt >= 250) {
         appendLiveSample("download", totalBytes - previousBytes, (endedAt - previousSampleAt) / 1000);
       }
-      setPhase(`${phaseLabel} 완료`, durationSeconds, durationSeconds);
+      progress.finishPhase();
       const completedResult = {
         bytes_transferred: totalBytes,
         actual_duration_seconds: Math.max((endedAt - startedAt) / 1000, 0.001),
@@ -421,7 +563,9 @@
         excelLink.hidden = false;
         excelLink.setAttribute("download", "");
       }
-      progressBar.style.width = "100%";
+      if (result.status === "success") {
+        progress.complete();
+      }
       drawChart();
     }
 
@@ -474,6 +618,7 @@
         );
         activeSessionId = session.session_id;
         statusText.textContent = "측정 중";
+        progress.configure(direction, session.warmup_seconds, session.duration_seconds);
 
         if (direction === "upload" || direction === "full") {
           await runDirection("upload", session, activeController.signal);
@@ -488,15 +633,16 @@
           results: clientResults,
         });
         statusText.textContent = "완료";
-        phaseText.textContent = "HTTP 지속 측정 완료";
         renderCompletedResult(completed);
       } catch (error) {
+        const errorMessage = error.message || "측정 중 오류가 발생했습니다.";
+        progress.terminate(cancellationRequested ? "취소됨" : "실패", cancellationRequested ? "" : errorMessage);
         let savedResult = null;
         if (activeSessionId) {
           try {
             savedResult = await finalizeSession(cancellationRequested ? "cancel" : "complete", {
               status: cancellationRequested ? "cancelled" : "failure",
-              error: error.message || "측정 중 오류가 발생했습니다.",
+              error: errorMessage,
               latency_samples_ms: latencySamples,
               results: clientResults,
             });
@@ -505,11 +651,11 @@
           }
         }
         statusText.textContent = cancellationRequested ? "취소됨" : "실패";
-        phaseText.textContent = error.message || "측정 중 오류가 발생했습니다.";
         if (savedResult) {
           renderCompletedResult(savedResult);
         }
       } finally {
+        progress.stop();
         activeSessionId = "";
         activeController = null;
         setRunning(false);
@@ -595,6 +741,7 @@
     });
     cancelButton.addEventListener("click", () => {
       cancellationRequested = true;
+      progress.stop();
       if (activeController) {
         activeController.abort();
       }

@@ -369,6 +369,14 @@ select:disabled {
   transition: width 120ms linear;
 }
 
+.progress-bar[data-sustained-progress-bar] {
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: none;
+  will-change: transform;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
