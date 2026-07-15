@@ -37,6 +37,7 @@ def build_service(
     agent_ttl: float = 10.0,
     terminal_ttl: float = 30 * 60.0,
     max_terminal_sessions: int = 100,
+    max_connection_handlers: int = 16,
     clock=time.perf_counter,
 ) -> tuple[ProbeService, NetworkMeasurementGate]:
     gate = NetworkMeasurementGate()
@@ -53,6 +54,7 @@ def build_service(
             stream_attach_timeout_seconds=attach_timeout,
             terminal_session_ttl_seconds=terminal_ttl,
             max_terminal_sessions=max_terminal_sessions,
+            max_connection_handlers=max_connection_handlers,
         ),
         measurement_gate=gate,
         normalize_ip=lambda value: value or "",
@@ -158,6 +160,59 @@ def run_client_phase(
 
 def test_probe_self_check_transfers_bytes():
     assert run_probe_self_check() == 0
+
+
+def test_probe_connection_handlers_are_bounded_and_release_capacity(tmp_path, monkeypatch):
+    service, _ = build_service(tmp_path, max_connection_handlers=2)
+    release_handlers = threading.Event()
+    both_started = threading.Event()
+    started_count = 0
+    started_lock = threading.Lock()
+
+    class DummyConnection:
+        def __init__(self):
+            self.closed = False
+
+        def shutdown(self, _how):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    def blocking_handler(_connection, _client_ip):
+        nonlocal started_count
+        with started_lock:
+            started_count += 1
+            if started_count == 2:
+                both_started.set()
+        release_handlers.wait(timeout=3)
+
+    monkeypatch.setattr(service, "_handle_connection", blocking_handler)
+    first = DummyConnection()
+    second = DummyConnection()
+    rejected = DummyConnection()
+
+    assert service._start_connection_handler(first, "127.0.0.1") is True
+    assert service._start_connection_handler(second, "127.0.0.1") is True
+    assert both_started.wait(timeout=2)
+    assert service._start_connection_handler(rejected, "127.0.0.1") is False
+    assert rejected.closed is True
+
+    release_handlers.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        with service.connection_handlers_lock:
+            if not service.connection_handlers:
+                break
+        time.sleep(0.01)
+    with service.connection_handlers_lock:
+        assert service.connection_handlers == {}
+
+    release_handlers.clear()
+    replacement = DummyConnection()
+    assert service._start_connection_handler(replacement, "127.0.0.1") is True
+    service.stop()
+    assert replacement.closed is True
 
 
 def test_probe_client_rejects_invalid_server_port():

@@ -13,6 +13,7 @@ PROBE_STREAM_COUNTS = (1, 4)
 PROBE_WARMUP_SECONDS = 3.0
 PROBE_TERMINAL_SESSION_TTL_SECONDS = 30 * 60.0
 PROBE_MAX_TERMINAL_SESSIONS = 100
+PROBE_MAX_CONNECTION_HANDLERS = 16
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class ProbeConfig:
     stream_attach_timeout_seconds: float = 10.0
     terminal_session_ttl_seconds: float = PROBE_TERMINAL_SESSION_TTL_SECONDS
     max_terminal_sessions: int = PROBE_MAX_TERMINAL_SESSIONS
+    max_connection_handlers: int = PROBE_MAX_CONNECTION_HANDLERS
 
 
 @dataclass

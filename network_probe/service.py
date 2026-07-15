@@ -97,6 +97,11 @@ class ProbeService:
         self.sessions: dict[str, ProbeSession] = {}
         self.listener: socket.socket | None = None
         self.accept_thread: threading.Thread | None = None
+        self.connection_handler_slots = threading.BoundedSemaphore(
+            max(int(config.max_connection_handlers), 1)
+        )
+        self.connection_handlers_lock = threading.Lock()
+        self.connection_handlers: dict[threading.Thread, socket.socket] = {}
         self.stop_event = threading.Event()
         self.start_error = ""
         self.started = False
@@ -141,6 +146,13 @@ class ProbeService:
                 pass
         if self.accept_thread is not None:
             self.accept_thread.join(timeout=3)
+        with self.connection_handlers_lock:
+            handlers = list(self.connection_handlers.items())
+        for _, connection in handlers:
+            self._close_socket(connection)
+        handler_deadline = time.monotonic() + 6.0
+        for thread, _ in handlers:
+            thread.join(timeout=max(handler_deadline - time.monotonic(), 0.0))
         with self.lock:
             self.started = False
 
@@ -467,12 +479,39 @@ class ProbeService:
                 if self.stop_event.is_set():
                     break
                 continue
-            thread = threading.Thread(
-                target=self._handle_connection,
-                args=(connection, self.normalize_ip(address[0])),
-                daemon=True,
-            )
+            self._start_connection_handler(connection, self.normalize_ip(address[0]))
+
+    def _start_connection_handler(self, connection: socket.socket, client_ip: str) -> bool:
+        if not self.connection_handler_slots.acquire(blocking=False):
+            self._close_socket(connection)
+            return False
+
+        thread = threading.Thread(
+            target=self._run_connection_handler,
+            args=(connection, client_ip),
+            name="network-probe-connection",
+            daemon=True,
+        )
+        with self.connection_handlers_lock:
+            self.connection_handlers[thread] = connection
+        try:
             thread.start()
+        except Exception:
+            with self.connection_handlers_lock:
+                self.connection_handlers.pop(thread, None)
+            self.connection_handler_slots.release()
+            self._close_socket(connection)
+            return False
+        return True
+
+    def _run_connection_handler(self, connection: socket.socket, client_ip: str) -> None:
+        try:
+            self._handle_connection(connection, client_ip)
+        finally:
+            current_thread = threading.current_thread()
+            with self.connection_handlers_lock:
+                self.connection_handlers.pop(current_thread, None)
+            self.connection_handler_slots.release()
 
     def _handle_connection(self, connection: socket.socket, client_ip: str) -> None:
         handed_off = False
@@ -489,7 +528,7 @@ class ProbeService:
                     name=f"probe-{session.session_id[:8]}-{phase}",
                     daemon=True,
                 ).start()
-        except (ProbeProtocolError, ProbeServiceError, KeyError, TypeError, ValueError) as exc:
+        except (OSError, ProbeProtocolError, ProbeServiceError, KeyError, TypeError, ValueError) as exc:
             try:
                 send_frame(connection, {"type": "error", "error": str(exc)[:300]})
             except Exception:
