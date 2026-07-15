@@ -182,6 +182,65 @@ def test_cleanup_stale_upload_artifacts_only_removes_old_project_files(tmp_path)
     assert user_part.exists()
 
 
+def test_upload_log_reader_waits_for_in_progress_writer(app_client, monkeypatch):
+    _, config, _ = app_client
+    writer_started = threading.Event()
+    allow_writer = threading.Event()
+    reader_finished = threading.Event()
+    errors = []
+    observed_rows = []
+    original_append = app_module._append_csv_row_with_rollback
+
+    def blocking_append(log_path, fieldnames, row):
+        writer_started.set()
+        if not allow_writer.wait(timeout=3):
+            raise TimeoutError("test writer was not released")
+        return original_append(log_path, fieldnames, row)
+
+    def write_log():
+        try:
+            app_module.append_upload_log(
+                {
+                    "upload_id": "concurrent-log-entry",
+                    "uploaded_at": "2026-07-15 12:00:00 +0900",
+                    "original_filename": "concurrent.txt",
+                    "stored_filename": "concurrent.txt",
+                    "storage_subdir": "",
+                    "storage_path": str(config.storage_root / "concurrent.txt"),
+                    "memo": "",
+                    "download_url": "http://files.local:8000/download/concurrent-log-entry",
+                },
+                config,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def read_log():
+        try:
+            observed_rows.extend(read_upload_log(config))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            reader_finished.set()
+
+    monkeypatch.setattr(app_module, "_append_csv_row_with_rollback", blocking_append)
+    writer = threading.Thread(target=write_log)
+    reader = threading.Thread(target=read_log)
+    writer.start()
+    assert writer_started.wait(timeout=2)
+    reader.start()
+
+    assert reader_finished.wait(timeout=0.1) is False
+    allow_writer.set()
+    writer.join(timeout=3)
+    reader.join(timeout=3)
+
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+    assert errors == []
+    assert [row["upload_id"] for row in observed_rows] == ["concurrent-log-entry"]
+
+
 def test_upload_log_failure_removes_saved_file(app_client, monkeypatch):
     client, config, _ = app_client
 

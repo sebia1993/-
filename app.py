@@ -467,9 +467,10 @@ def append_upload_log(row: dict[str, str], config: AppConfig) -> None:
 
 
 def read_upload_log(config: AppConfig, limit: int | None = None) -> list[dict[str, str]]:
-    ensure_log_file(config.log_path)
-    with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.DictReader(handle))
+    with _csv_lock:
+        ensure_log_file(config.log_path)
+        with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
     rows = [row for row in rows if row.get("upload_id")]
     rows.reverse()
     return rows[:limit] if limit else rows
@@ -622,9 +623,10 @@ def append_network_check_log(row: dict[str, str], config: AppConfig) -> None:
 
 
 def read_network_check_log(config: AppConfig, limit: int | None = None) -> list[dict[str, str]]:
-    ensure_network_check_log_file(config.network_check_log_path)
-    with config.network_check_log_path.open("r", encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.DictReader(handle))
+    with _network_check_csv_lock:
+        ensure_network_check_log_file(config.network_check_log_path)
+        with config.network_check_log_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
     rows = [row for row in rows if row.get("checked_at")]
     rows.reverse()
     return rows[:limit] if limit else rows
