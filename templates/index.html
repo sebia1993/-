@@ -6,6 +6,7 @@
     <title>사내 업로드</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script defer src="{{ url_for('static', filename='network_check.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='throughput_chart.js') }}"></script>
     <script defer src="{{ url_for('static', filename='network_sustained.js') }}"></script>
     <script defer src="{{ url_for('static', filename='network_probe.js') }}"></script>
   </head>
@@ -344,12 +345,21 @@
                   평균 속도는 실제 전송량을 본 측정 시간으로 나눈 값입니다. MB/s는 1초 동안 전송한 파일 용량입니다.
                 </p>
 
-                <div class="throughput-chart" data-sustained-chart-panel>
-                  <canvas data-sustained-chart width="900" height="280" aria-label="1초 구간 HTTP 처리량 그래프"></canvas>
-                  <div class="chart-legend">
-                    <span><i class="legend-upload"></i>업로드</span>
-                    <span><i class="legend-download"></i>다운로드</span>
-                  </div>
+                <div class="throughput-chart-grid" data-sustained-chart-panel>
+                  <figure class="throughput-chart-card" data-sustained-chart-card="upload" hidden>
+                    <figcaption>업로드 속도 변화</figcaption>
+                    <div class="throughput-chart-canvas">
+                      <canvas data-sustained-chart="upload" width="900" height="280" tabindex="0" aria-label="HTTP 업로드 속도 변화 그래프"></canvas>
+                      <div class="chart-tooltip" data-chart-tooltip role="status" hidden></div>
+                    </div>
+                  </figure>
+                  <figure class="throughput-chart-card" data-sustained-chart-card="download" hidden>
+                    <figcaption>다운로드 속도 변화</figcaption>
+                    <div class="throughput-chart-canvas">
+                      <canvas data-sustained-chart="download" width="900" height="280" tabindex="0" aria-label="HTTP 다운로드 속도 변화 그래프"></canvas>
+                      <div class="chart-tooltip" data-chart-tooltip role="status" hidden></div>
+                    </div>
+                  </figure>
                 </div>
 
                 <details class="result-disclosure" data-sustained-technical-details>
@@ -382,16 +392,22 @@
 
             <div class="result-summary-grid" data-probe-summary></div>
 
-            <details class="result-disclosure" data-probe-chart-details hidden>
-              <summary>속도 변화 보기</summary>
-              <div class="throughput-chart disclosure-chart">
-                <canvas data-probe-chart width="900" height="280" aria-label="1초 구간 TCP 수신 처리량 그래프"></canvas>
-                <div class="chart-legend">
-                  <span><i class="legend-upload"></i>업로드</span>
-                  <span><i class="legend-download"></i>다운로드</span>
+            <div class="throughput-chart-grid" data-probe-chart-panel hidden>
+              <figure class="throughput-chart-card" data-probe-chart-card="upload" hidden>
+                <figcaption>업로드 속도 변화</figcaption>
+                <div class="throughput-chart-canvas">
+                  <canvas data-probe-chart="upload" width="900" height="280" tabindex="0" aria-label="TCP 업로드 수신 속도 변화 그래프"></canvas>
+                  <div class="chart-tooltip" data-chart-tooltip role="status" hidden></div>
                 </div>
-              </div>
-            </details>
+              </figure>
+              <figure class="throughput-chart-card" data-probe-chart-card="download" hidden>
+                <figcaption>다운로드 속도 변화</figcaption>
+                <div class="throughput-chart-canvas">
+                  <canvas data-probe-chart="download" width="900" height="280" tabindex="0" aria-label="TCP 다운로드 수신 속도 변화 그래프"></canvas>
+                  <div class="chart-tooltip" data-chart-tooltip role="status" hidden></div>
+                </div>
+              </figure>
+            </div>
 
             <details class="result-disclosure" data-probe-technical-details hidden>
               <summary>기술 상세 보기</summary>

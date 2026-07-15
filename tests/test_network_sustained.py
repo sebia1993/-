@@ -110,28 +110,55 @@ def test_summarize_intervals_calculates_stable_statistics():
     assert summary["variability_percent"] == 0.0
 
 
+def test_summarize_intervals_uses_actual_client_sample_durations():
+    summary = summarize_intervals(
+        byte_count=3_000_000,
+        duration_seconds=3,
+        interval_bytes=[900_000, 1_100_000, 1_000_000],
+        interval_durations=[0.9, 1.1, 1.0],
+    )
+
+    assert summary["average_mbps"] == 8.0
+    assert summary["min_mbps"] == 8.0
+    assert summary["max_mbps"] == 8.0
+    assert [row["duration_seconds"] for row in summary["intervals"]] == [0.9, 1.1, 1.0]
+
+
 def test_excel_report_contains_summary_intervals_and_chart():
     workbook = load_workbook(BytesIO(build_sustained_excel(sample_excel_result())))
 
-    assert workbook.sheetnames == ["측정 요약", "구간별 속도"]
-    summary = workbook["측정 요약"]
-    intervals = workbook["구간별 속도"]
-    assert summary["A1"].value == "HTTP 시간 기준 측정 결과"
+    assert workbook.sheetnames == ["결과 요약", "속도 변화"]
+    summary = workbook["결과 요약"]
+    intervals = workbook["속도 변화"]
+    assert summary["A1"].value == "HTTP 시간 측정 결과"
+    assert summary["A2"].value == "시간 기준: 한국 표준시(KST)"
     assert summary["B4"].value == "성공"
-    assert summary["D4"].value == "0123456789abcdef0123456789abcdef"
-    assert summary["B7"].value == "전체"
-    assert summary["H7"].value == 4
-    assert summary["A15"].value == "업로드"
-    assert summary["E15"].value == 124.0
-    assert summary["F15"].value == 15.5
-    assert summary["A16"].value == "다운로드"
-    assert intervals["A4"].value == 1
+    assert summary["D4"].value == "전체"
+    assert summary["F4"].value == "10.0.0.10"
+    assert summary["B5"].value.strftime("%Y-%m-%d %H:%M:%S") == "2026-07-14 14:30:00"
+    assert summary["B6"].value == 30
+    assert summary["F6"].value == 4
+    assert summary["A11"].value == "업로드"
+    assert summary["B11"].value == 124.0
+    assert summary["C11"].value == 15.5
+    assert summary["A12"].value == "다운로드"
+    assert intervals["A4"].value == "업로드"
+    assert intervals["B4"].value == 1
     assert intervals["C4"].value == 8.0
-    assert intervals["E33"].value == 480.0
+    assert intervals["C63"].value == 480.0
     assert intervals.freeze_panes == "A4"
-    assert intervals.auto_filter.ref == "A3:E33"
-    assert len(intervals._charts) == 1
-    assert len(intervals._charts[0].series) == 2
+    assert intervals.auto_filter.ref == "A3:D63"
+    assert len(intervals._charts) == 2
+    assert all(len(chart.series) == 3 for chart in intervals._charts)
+    assert all(chart.y_axis.scaling.min == 0 for chart in intervals._charts)
+    assert intervals._charts[0].series[2].dLbls.showVal is True
+    assert all(intervals.column_dimensions[column].hidden for column in "EFGH")
+    assert all(
+        cell.value != "0123456789abcdef0123456789abcdef"
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+    )
 
 
 def test_excel_report_neutralizes_formula_text_and_supports_failure():
@@ -139,19 +166,31 @@ def test_excel_report_neutralizes_formula_text_and_supports_failure():
     result["client_ip"] = "  +cmd|' /C calc'!A0"
 
     workbook = load_workbook(BytesIO(build_sustained_excel(result)), data_only=False)
-    summary = workbook["측정 요약"]
+    summary = workbook["결과 요약"]
 
     assert summary["B4"].value == "실패"
-    assert summary["B5"].value.startswith("'=")
-    assert summary["F6"].value.startswith("'")
-    assert summary["B5"].data_type == "s"
+    assert summary["B7"].value.startswith("'=")
+    assert summary["F4"].value.startswith("'")
+    assert summary["B7"].data_type == "s"
     assert safe_excel_text("@SUM(A1:A2)") == "'@SUM(A1:A2)"
 
 
-def test_excel_filename_uses_completion_time_and_short_session_id():
+def test_excel_filename_uses_kst_completion_time_without_session_id():
     filename = build_sustained_excel_filename(sample_excel_result())
 
-    assert filename == "network-check_20260714-143106_01234567.xlsx"
+    assert filename == "HTTP_시간측정_20260714_143106.xlsx"
+    assert "01234567" not in filename
+
+
+def test_excel_report_converts_offset_time_to_kst():
+    result = sample_excel_result()
+    result["started_at"] = "2026-07-14 05:30:00 +0000"
+    result["completed_at"] = "2026-07-14 06:31:06 +0000"
+
+    workbook = load_workbook(BytesIO(build_sustained_excel(result)))
+
+    assert workbook["결과 요약"]["B5"].value.strftime("%Y-%m-%d %H:%M:%S") == "2026-07-14 14:30:00"
+    assert build_sustained_excel_filename(result) == "HTTP_시간측정_20260714_153106.xlsx"
 
 
 def test_manager_excludes_warmup_and_persists_result(tmp_path):
@@ -392,9 +431,9 @@ def test_sustained_result_download_is_limited_to_origin_ip(sustained_client):
     assert excel_allowed.status_code == 200
     assert excel_allowed.mimetype == EXCEL_MIME_TYPE
     assert "no-store" in excel_allowed.headers["Cache-Control"]
-    assert f"network-check_" in excel_allowed.headers["Content-Disposition"]
-    assert session_id[:8] in excel_allowed.headers["Content-Disposition"]
-    assert load_workbook(BytesIO(excel_allowed.data)).sheetnames == ["측정 요약", "구간별 속도"]
+    assert "202607" in excel_allowed.headers["Content-Disposition"]
+    assert session_id[:8] not in excel_allowed.headers["Content-Disposition"]
+    assert load_workbook(BytesIO(excel_allowed.data)).sheetnames == ["결과 요약", "속도 변화"]
     assert excel_denied.status_code == 403
 
 

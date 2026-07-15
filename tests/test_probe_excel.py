@@ -84,34 +84,43 @@ def sample_probe_result() -> dict:
 def test_probe_excel_has_summary_intervals_streams_and_charts():
     workbook = load_workbook(BytesIO(build_probe_excel(sample_probe_result())), data_only=False)
 
-    assert workbook.sheetnames == ["측정 요약", "구간별 속도", "스트림 상세"]
-    summary = workbook["측정 요약"]
-    intervals = workbook["구간별 속도"]
-    streams = workbook["스트림 상세"]
-    assert summary["A1"].value == "TCP 전송 성능 측정 결과"
+    assert workbook.sheetnames == ["결과 요약", "속도 변화", "기술 상세"]
+    summary = workbook["결과 요약"]
+    intervals = workbook["속도 변화"]
+    streams = workbook["기술 상세"]
+    assert summary["A1"].value == "TCP 전송 측정 결과"
+    assert summary["A2"].value == "시간 기준: 한국 표준시(KST)"
     assert summary["B4"].value == "완료"
-    assert summary["D4"].value == SESSION_ID
-    assert summary["B5"].value.startswith("'@")
-    assert summary["B7"].value.startswith("'=")
+    assert summary["D4"].value == "전체"
+    assert summary["F4"].value == 1
+    assert summary["B5"].value.strftime("%Y-%m-%d %H:%M:%S") == "2026-07-14 14:30:00"
+    assert summary["B6"].value.startswith("'=")
+    assert summary["B7"].value.startswith("'@")
     assert summary["A11"].value == "업로드"
     assert summary["B11"].value == "측정 PC → 서버"
     assert summary["C11"].value == 12.0
     assert summary["D11"].value == 1.5
-    assert summary["H11"].value == 1.25
-    assert summary["J11"].value == "4.0 KB"
-    assert round(summary["K11"].value, 3) == 0.137
+    assert summary["G11"].value == 1.25
+    assert round(summary["H11"].value, 3) == 0.137
     assert summary["C12"].value == 24.0
-    assert summary["B15"].value == 50.0
-    assert "정상·비정상을 자동 판정하지 않습니다" in summary["A18"].value
+    assert "정상·비정상을 자동 판정하지 않습니다" in summary["A15"].value
     assert intervals["A4"].value == "업로드"
-    assert intervals["D4"].value == 8.0
-    assert intervals["D3"].value == "송신 측 기록(Mbps)"
-    assert intervals["F3"].value == "수신 측 실제(Mbps)"
+    assert intervals["C4"].value == 8.0
+    assert intervals["C3"].value == "속도(Mbps)"
+    assert intervals["D3"].value == "초당 전송량(MB/s)"
     assert len(intervals._charts) == 2
+    assert all(len(chart.series) == 3 for chart in intervals._charts)
+    assert all(chart.y_axis.scaling.min == 0 for chart in intervals._charts)
     assert streams["A4"].value == "업로드"
     assert streams["B4"].value == "송신 측"
     assert streams["J4"].value == 1.25
     assert streams["I5"].value == "운영체제에서 제공하지 않음"
+    assert all(
+        cell.value != SESSION_ID
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+    )
 
 
 def test_probe_excel_supports_single_direction_missing_telemetry_and_zero_bytes():
@@ -122,19 +131,18 @@ def test_probe_excel_supports_single_direction_missing_telemetry_and_zero_bytes(
     sender["telemetry"] = {"available": False, "error": "지원 안 됨"}
 
     workbook = load_workbook(BytesIO(build_probe_excel(result)))
-    summary = workbook["측정 요약"]
+    summary = workbook["결과 요약"]
 
     assert summary["A11"].value == "업로드"
     assert summary["A12"].value == "다운로드"
     assert summary["C12"].value == "측정 안 함"
+    assert summary["G11"].value == "운영체제에서 제공하지 않음"
     assert summary["H11"].value == "운영체제에서 제공하지 않음"
-    assert summary["K11"].value == "운영체제에서 제공하지 않음"
-    assert summary["B15"].value == "측정 안 함"
 
     sender["telemetry"] = {"available": True, "bytes_retrans": 0, "rtt_us": 0, "min_rtt_us": 0}
     sender["bytes"] = 0
     zero_workbook = load_workbook(BytesIO(build_probe_excel(result)))
-    assert zero_workbook["측정 요약"]["K11"].value == "계산 불가"
+    assert zero_workbook["결과 요약"]["H11"].value == "계산 불가"
 
 
 def test_probe_excel_supports_failed_result_without_completed_phases():
@@ -144,17 +152,27 @@ def test_probe_excel_supports_failed_result_without_completed_phases():
     result["phases"] = {}
 
     workbook = load_workbook(BytesIO(build_probe_excel(result)))
-    summary = workbook["측정 요약"]
+    summary = workbook["결과 요약"]
 
     assert summary["B4"].value == "실패"
-    assert summary["B5"].value == "연결 실패"
+    assert summary["B7"].value == "연결 실패"
     assert summary["C11"].value == "측정 안 함"
     assert summary["C12"].value == "측정 안 함"
-    assert summary["B15"].value == "측정 안 함"
 
 
-def test_probe_excel_filename_uses_completion_time_and_session():
-    assert build_probe_excel_filename(sample_probe_result()) == "tcp-probe_20260714-143106_01234567.xlsx"
+def test_probe_excel_filename_uses_kst_completion_time_without_session():
+    assert build_probe_excel_filename(sample_probe_result()) == "TCP_전송측정_20260714_143106.xlsx"
+
+
+def test_probe_excel_converts_offset_time_to_kst():
+    result = sample_probe_result()
+    result["started_at"] = "2026-07-14 05:30:00 +0000"
+    result["completed_at"] = "2026-07-14 06:31:06 +0000"
+
+    workbook = load_workbook(BytesIO(build_probe_excel(result)))
+
+    assert workbook["결과 요약"]["B5"].value.strftime("%Y-%m-%d %H:%M:%S") == "2026-07-14 14:30:00"
+    assert build_probe_excel_filename(result) == "TCP_전송측정_20260714_153106.xlsx"
 
 
 def test_probe_excel_route_handles_saved_missing_and_corrupt_results(tmp_path):
@@ -171,8 +189,9 @@ def test_probe_excel_route_handles_saved_missing_and_corrupt_results(tmp_path):
     assert response.mimetype == EXCEL_MIME_TYPE
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
-    assert "tcp-probe_20260714-143106_01234567.xlsx" in response.headers["Content-Disposition"]
-    assert load_workbook(BytesIO(response.data)).sheetnames == ["측정 요약", "구간별 속도", "스트림 상세"]
+    assert "20260714_143106" in response.headers["Content-Disposition"]
+    assert "01234567" not in response.headers["Content-Disposition"]
+    assert load_workbook(BytesIO(response.data)).sheetnames == ["결과 요약", "속도 변화", "기술 상세"]
 
     missing = client.get(f"/api/network-probe/results/{'f' * 32}.xlsx")
     assert missing.status_code == 404

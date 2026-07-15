@@ -474,7 +474,12 @@ def test_network_check_tab_and_size_options(app_client):
     assert "4개 스트림 비교 측정" in body
     assert "data-probe-four-stream" in body
     assert "data-probe-stream=" not in body
-    assert "속도 변화 보기" in body
+    assert "data-probe-chart-panel" in body
+    assert 'data-sustained-chart="upload"' in body
+    assert 'data-sustained-chart="download"' in body
+    assert 'data-probe-chart="upload"' in body
+    assert 'data-probe-chart="download"' in body
+    assert "throughput_chart.js" in body
     assert body.count("기술 상세 보기") == 2
     assert "업로드 실제 수신 속도" not in body
     assert "다운로드 실제 수신 속도" not in body
@@ -674,6 +679,8 @@ def test_sustained_network_js_uses_regular_post_chunks():
     assert "data-sustained-live-speed" in script
     assert "data-sustained-completed" in script
     assert "낮을수록 측정 중 속도가 일정함" in script
+    assert "InternalUploadThroughputChart" in script
+    assert "syncCharts" in script
     assert script.index("if (result.excel_url)") < script.index('if (result.status !== "success")')
 
 
@@ -692,21 +699,40 @@ def test_probe_network_js_uses_audience_friendly_summary():
     assert "TCP 왕복시간(RTT)" in script
     assert "1초 구간 최저 속도" in script
     assert "1초 구간 최고 속도" in script
-    assert "data-probe-chart-details" in script
+    assert "data-probe-chart-panel" in script
     assert "data-probe-technical-details" in script
     assert "data-probe-cwnd" not in script
     assert "connectivity_status === \"ready\"" in script
     assert "TCP ${agent.probe_port} 연결 준비 완료" in script
     assert "약 20초 안에 자동 재점검" in script
     assert "최신 ZIP 사용 권장" in script
+    assert "createProbeProgress" in script
+    assert "Math.min(99.5" in script
+    assert "animateTo(100, 300)" in script
+    assert "style.transform = `scaleX(" in script
+
+
+def test_shared_throughput_chart_has_readable_axes_and_interaction():
+    script = Path("static/throughput_chart.js").read_text(encoding="utf-8")
+
+    assert "niceMaximum" in script
+    assert "평균 ${formatMbps(average)}" in script
+    assert "최저 ${formatMbps(minimumValue)}" in script
+    assert "최고 ${formatMbps(maximumValue)}" in script
+    assert "pointermove" in script
+    assert "ArrowLeft" in script
+    assert "MB/s" in script
+    assert "ResizeObserver" in script
 
 
 def test_sustained_progress_uses_its_own_time_based_style():
     stylesheet = Path("static/style.css").read_text(encoding="utf-8")
 
     assert ".progress-bar[data-sustained-progress-bar]" in stylesheet
+    assert ".progress-bar[data-probe-progress-bar]" in stylesheet
     assert "transform-origin: left center" in stylesheet
     assert "transition: none" in stylesheet
+    assert ".chart-tooltip" in stylesheet
 
 
 def test_windows_release_checksum_uses_portable_lf_line_ending():

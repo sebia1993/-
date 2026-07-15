@@ -111,15 +111,24 @@ def summarize_intervals(
     byte_count: int,
     duration_seconds: float,
     interval_bytes: list[int],
+    interval_durations: list[float] | None = None,
 ) -> dict[str, Any]:
     interval_rows = []
     for index, bytes_in_interval in enumerate(interval_bytes):
+        interval_duration = 1.0
+        if interval_durations is not None and index < len(interval_durations):
+            try:
+                candidate_duration = float(interval_durations[index])
+            except (TypeError, ValueError):
+                candidate_duration = 1.0
+            if math.isfinite(candidate_duration) and candidate_duration > 0:
+                interval_duration = candidate_duration
         interval_rows.append(
             {
                 "index": index + 1,
-                "duration_seconds": 1.0,
+                "duration_seconds": round(interval_duration, 3),
                 "bytes_transferred": int(bytes_in_interval),
-                "mbps": round(calculate_mbps(int(bytes_in_interval), 1.0), 2),
+                "mbps": round(calculate_mbps(int(bytes_in_interval), interval_duration), 2),
             }
         )
 
@@ -456,16 +465,27 @@ class SustainedCheckManager:
         if not math.isfinite(duration) or duration <= 0 or duration > requested_duration + 5:
             raise SustainedCheckError("다운로드 측정 시간이 올바르지 않습니다.")
         interval_bytes = []
+        interval_durations = []
         raw_intervals = value.get("intervals", [])
         if isinstance(raw_intervals, list):
             for item in raw_intervals[: requested_duration + 2]:
                 if not isinstance(item, dict):
                     continue
                 try:
-                    interval_bytes.append(max(0, int(item.get("bytes_transferred", 0))))
+                    bytes_in_interval = max(0, int(item.get("bytes_transferred", 0)))
+                    interval_duration = float(item.get("duration_seconds", 1.0))
                 except (TypeError, ValueError):
                     continue
-        return summarize_intervals(byte_count=byte_count, duration_seconds=duration, interval_bytes=interval_bytes)
+                if not math.isfinite(interval_duration) or interval_duration <= 0 or interval_duration > 5:
+                    continue
+                interval_bytes.append(bytes_in_interval)
+                interval_durations.append(interval_duration)
+        return summarize_intervals(
+            byte_count=byte_count,
+            duration_seconds=duration,
+            interval_bytes=interval_bytes,
+            interval_durations=interval_durations,
+        )
 
     def _persist_result(self, result: dict[str, Any]) -> None:
         ensure_sustained_storage(self.log_path, self.results_root)

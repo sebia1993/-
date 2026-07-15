@@ -1,5 +1,4 @@
 (function () {
-  const COLORS = { upload: "#246b54", download: "#c15f2e" };
   const TELEMETRY_UNAVAILABLE = "운영체제에서 제공하지 않음";
 
   function formatSpeed(value) {
@@ -61,6 +60,92 @@
     return payload;
   }
 
+  function createProbeProgress(progressBar) {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let animationFrameId = 0;
+    let currentPercent = 0;
+    let fromPercent = 0;
+    let targetPercent = 0;
+    let startedAt = 0;
+    let durationMs = 650;
+
+    function render() {
+      progressBar.style.transform = `scaleX(${(currentPercent / 100).toFixed(4)})`;
+    }
+
+    function cancelAnimation() {
+      if (animationFrameId) {
+        window.cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      }
+    }
+
+    function sample(timestamp) {
+      if (!animationFrameId || durationMs <= 0) return currentPercent;
+      const fraction = Math.min(1, Math.max(0, (timestamp - startedAt) / durationMs));
+      currentPercent = fromPercent + (targetPercent - fromPercent) * fraction;
+      return currentPercent;
+    }
+
+    function animateTo(nextPercent, nextDuration) {
+      const now = performance.now();
+      sample(now);
+      cancelAnimation();
+      const bounded = Math.max(currentPercent, Math.min(100, Number(nextPercent) || 0));
+      if (reducedMotion || bounded <= currentPercent) {
+        currentPercent = bounded;
+        targetPercent = bounded;
+        render();
+        return;
+      }
+      fromPercent = currentPercent;
+      targetPercent = bounded;
+      startedAt = now;
+      durationMs = nextDuration;
+
+      function tick(timestamp) {
+        sample(timestamp);
+        render();
+        if (currentPercent < targetPercent) {
+          animationFrameId = window.requestAnimationFrame(tick);
+        } else {
+          animationFrameId = 0;
+        }
+      }
+
+      animationFrameId = window.requestAnimationFrame(tick);
+    }
+
+    function reset() {
+      cancelAnimation();
+      currentPercent = 0;
+      fromPercent = 0;
+      targetPercent = 0;
+      startedAt = 0;
+      render();
+    }
+
+    function stop() {
+      sample(performance.now());
+      cancelAnimation();
+      render();
+    }
+
+    function update(serverPercent, status, persistenceComplete) {
+      if (status === "completed" && persistenceComplete !== false) {
+        animateTo(100, 300);
+        return;
+      }
+      if (status === "cancelled" || status === "failed") {
+        animateTo(Math.min(99.5, Number(serverPercent) || 0), 300);
+        return;
+      }
+      animateTo(Math.min(99.5, Number(serverPercent) || 0), 650);
+    }
+
+    return { reset, stop, update };
+  }
+
   function initProbe() {
     const root = document.querySelector("[data-network-check]");
     if (!root || !root.dataset.probeStatusUrl) return;
@@ -80,20 +165,52 @@
     const phaseText = root.querySelector("[data-probe-phase]");
     const progressBar = root.querySelector("[data-probe-progress-bar]");
     const summaryList = root.querySelector("[data-probe-summary]");
-    const chartDetails = root.querySelector("[data-probe-chart-details]");
+    const chartPanel = root.querySelector("[data-probe-chart-panel]");
+    const chartCards = new Map(
+      Array.from(root.querySelectorAll("[data-probe-chart-card]"))
+        .map((card) => [card.dataset.probeChartCard, card])
+    );
     const technicalDetails = root.querySelector("[data-probe-technical-details]");
     const conditionsText = root.querySelector("[data-probe-conditions]");
     const clientText = root.querySelector("[data-probe-client]");
     const detailList = root.querySelector("[data-probe-detail-list]");
     const excelLink = root.querySelector("[data-probe-excel]");
     const criterionButtons = root.querySelectorAll("[data-http-criterion]");
-    const chart = root.querySelector("[data-probe-chart]");
 
     let serviceAvailable = false;
     let running = false;
     let activeSessionId = "";
     let graphSeries = { upload: [], download: [] };
+    let chartAverages = { upload: null, download: null };
     let agentsById = new Map();
+    const progress = createProbeProgress(progressBar);
+    const chartRenderers = new Map();
+    root.querySelectorAll("[data-probe-chart]").forEach((canvas) => {
+      const direction = canvas.dataset.probeChart;
+      const renderer = window.InternalUploadThroughputChart && window.InternalUploadThroughputChart.create(
+        canvas,
+        {
+          color: direction === "upload" ? "#246b54" : "#c15f2e",
+          fillColor: direction === "upload" ? "rgba(36, 107, 84, 0.10)" : "rgba(193, 95, 46, 0.10)",
+          label: direction === "upload" ? "TCP 업로드" : "TCP 다운로드",
+        }
+      );
+      if (renderer) chartRenderers.set(direction, renderer);
+    });
+
+    function syncCharts() {
+      let visibleCount = 0;
+      ["upload", "download"].forEach((direction) => {
+        const series = graphSeries[direction];
+        const visible = Array.isArray(series) && series.length > 0;
+        const card = chartCards.get(direction);
+        if (card) card.hidden = !visible;
+        const renderer = chartRenderers.get(direction);
+        if (renderer) renderer.setData(visible ? series : [], { averageMbps: chartAverages[direction] });
+        if (visible) visibleCount += 1;
+      });
+      chartPanel.hidden = visibleCount === 0;
+    }
 
     function updateAdvancedSummary() {
       advancedSummary.textContent = fourStreamToggle.checked
@@ -168,10 +285,9 @@
     function resetResult() {
       statusText.textContent = "준비";
       phaseText.textContent = "TCP 전송 성능 측정 시작 대기";
-      progressBar.style.width = "0%";
+      progress.reset();
       summaryList.innerHTML = "";
-      chartDetails.hidden = true;
-      chartDetails.open = false;
+      chartPanel.hidden = true;
       technicalDetails.hidden = true;
       technicalDetails.open = false;
       conditionsText.textContent = "-";
@@ -180,7 +296,8 @@
       excelLink.hidden = true;
       excelLink.removeAttribute("href");
       graphSeries = { upload: [], download: [] };
-      drawChart();
+      chartAverages = { upload: null, download: null };
+      syncCharts();
     }
 
     function renderServiceStatus(payload) {
@@ -268,8 +385,12 @@
       const receiver = combined.receiver;
       const telemetry = sender.telemetry || {};
       graphSeries[direction] = Array.isArray(receiver.intervals)
-        ? receiver.intervals.map((item) => Number(item.mbps) || 0)
+        ? receiver.intervals.map((item, index) => ({
+          index: Number(item.index) || index + 1,
+          mbps: Number(item.mbps) || 0,
+        }))
         : [];
+      chartAverages[direction] = Number(receiver.average_mbps);
 
       const summary = document.createElement("div");
       summary.className = "result-summary-card";
@@ -315,7 +436,7 @@
     function renderSession(payload) {
       statusText.textContent = "진행 중";
       phaseText.textContent = stateLabel(payload);
-      progressBar.style.width = `${Number(payload.progress_percent || 0).toFixed(1)}%`;
+      progress.update(payload.progress_percent, payload.status, payload.persistence_complete);
       if (payload.agent) clientText.textContent = `${payload.agent.hostname} · ${payload.agent.client_ip}`;
       if (payload.requested) {
         conditionsText.textContent = `${Number(payload.requested.duration_seconds)}초 · TCP ${Number(payload.requested.stream_count)}개 스트림`;
@@ -323,9 +444,9 @@
       summaryList.innerHTML = "";
       detailList.innerHTML = "";
       graphSeries = { upload: [], download: [] };
+      chartAverages = { upload: null, download: null };
       const results = payload.results || {};
       const completed = payload.status === "completed" && payload.persistence_complete !== false;
-      chartDetails.hidden = !completed;
       technicalDetails.hidden = !completed;
       if (completed) {
         Object.entries(results).forEach(([direction, result]) => renderPhaseResult(direction, result));
@@ -336,9 +457,9 @@
           comparison.textContent = difference;
           detailList.appendChild(comparison);
         }
-        if (chartDetails.open) drawChart();
+        syncCharts();
       } else {
-        chartDetails.open = false;
+        chartPanel.hidden = true;
         technicalDetails.open = false;
       }
       if (payload.error) phaseText.textContent = payload.error;
@@ -405,6 +526,7 @@
       } catch (error) {
         running = false;
         activeSessionId = "";
+        progress.stop();
         statusText.textContent = "실패";
         phaseText.textContent = error.message;
         setControlsEnabled();
@@ -423,50 +545,6 @@
       }
     }
 
-    function drawChart() {
-      if (!chart || !chartDetails.open) return;
-      const rect = chart.getBoundingClientRect();
-      const ratio = window.devicePixelRatio || 1;
-      const width = Math.max(Math.floor(rect.width || 600), 320);
-      const height = Math.max(Math.floor(rect.height || 280), 220);
-      chart.width = Math.floor(width * ratio);
-      chart.height = Math.floor(height * ratio);
-      const context = chart.getContext("2d");
-      context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.clearRect(0, 0, width, height);
-      const padding = { left: 48, right: 18, top: 18, bottom: 32 };
-      const plotWidth = width - padding.left - padding.right;
-      const plotHeight = height - padding.top - padding.bottom;
-      const values = [...graphSeries.upload, ...graphSeries.download];
-      const maxValue = Math.max(10, ...values);
-      context.strokeStyle = "#d8ddd3";
-      context.fillStyle = "#626b5f";
-      context.font = '12px "Segoe UI", sans-serif';
-      for (let line = 0; line <= 4; line += 1) {
-        const y = padding.top + (plotHeight * line) / 4;
-        context.beginPath();
-        context.moveTo(padding.left, y);
-        context.lineTo(width - padding.right, y);
-        context.stroke();
-        context.fillText(`${Math.round(maxValue * (1 - line / 4))}`, 6, y + 4);
-      }
-      Object.entries(graphSeries).forEach(([direction, series]) => {
-        if (!series.length) return;
-        context.strokeStyle = COLORS[direction];
-        context.lineWidth = 2;
-        context.beginPath();
-        series.forEach((value, index) => {
-          const x = padding.left + (series.length === 1 ? 0 : (plotWidth * index) / (series.length - 1));
-          const y = padding.top + plotHeight - (Number(value) / maxValue) * plotHeight;
-          if (index === 0) context.moveTo(x, y);
-          else context.lineTo(x, y);
-        });
-        context.stroke();
-      });
-      context.fillText("Mbps", 6, 12);
-      context.fillText("초", width - 24, height - 8);
-    }
-
     actionButtons.forEach((button) => button.addEventListener("click", () => startMeasurement(button.dataset.probeAction)));
     agentSelect.addEventListener("change", setControlsEnabled);
     fourStreamToggle.addEventListener("change", updateAdvancedSummary);
@@ -474,10 +552,6 @@
       if (packageLink.getAttribute("aria-disabled") === "true") event.preventDefault();
     });
     cancelButton.addEventListener("click", cancelMeasurement);
-    chartDetails.addEventListener("toggle", () => {
-      if (chartDetails.open) window.requestAnimationFrame(drawChart);
-    });
-    window.addEventListener("resize", drawChart);
     window.setInterval(() => { if (!running) refreshAgents(); }, 3000);
     updateAdvancedSummary();
     resetResult();

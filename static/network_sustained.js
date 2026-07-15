@@ -8,10 +8,6 @@
   const MAX_IN_PROGRESS_PERCENT = 99.9;
   const PROGRESS_LABEL_INTERVAL_MS = 100;
   const HTTP_STREAM_COUNT = 1;
-  const SERIES_COLORS = {
-    upload: "#246b54",
-    download: "#c15f2e",
-  };
 
   function buildUrl(baseUrl, suffix) {
     const normalized = baseUrl.replace(/\/$/, "");
@@ -255,7 +251,11 @@
     const detailList = root.querySelector("[data-sustained-detail-list]");
     const technicalDetails = root.querySelector("[data-sustained-technical-details]");
     const excelLink = root.querySelector("[data-sustained-excel]");
-    const chart = root.querySelector("[data-sustained-chart]");
+    const chartPanel = root.querySelector("[data-sustained-chart-panel]");
+    const chartCards = new Map(
+      Array.from(root.querySelectorAll("[data-sustained-chart-card]"))
+        .map((card) => [card.dataset.sustainedChartCard, card])
+    );
 
     let selectedCriterion = "simple";
     let running = false;
@@ -265,7 +265,39 @@
     let latencySamples = [];
     let clientResults = {};
     const graphSeries = { upload: [], download: [] };
+    const chartAverages = { upload: null, download: null };
     const progress = createSustainedProgress(progressBar, phaseText);
+    const chartRenderers = new Map();
+    root.querySelectorAll("[data-sustained-chart]").forEach((canvas) => {
+      const direction = canvas.dataset.sustainedChart;
+      const renderer = window.InternalUploadThroughputChart && window.InternalUploadThroughputChart.create(
+        canvas,
+        {
+          color: direction === "upload" ? "#246b54" : "#c15f2e",
+          fillColor: direction === "upload" ? "rgba(36, 107, 84, 0.10)" : "rgba(193, 95, 46, 0.10)",
+          label: direction === "upload" ? "HTTP 업로드" : "HTTP 다운로드",
+        }
+      );
+      if (renderer) chartRenderers.set(direction, renderer);
+    });
+
+    function drawCharts() {
+      chartRenderers.forEach((renderer) => renderer.draw());
+    }
+
+    function syncCharts() {
+      let visibleCount = 0;
+      ["upload", "download"].forEach((direction) => {
+        const series = graphSeries[direction];
+        const visible = Array.isArray(series) && series.length > 0;
+        const card = chartCards.get(direction);
+        if (card) card.hidden = !visible;
+        const renderer = chartRenderers.get(direction);
+        if (renderer) renderer.setData(visible ? series : [], { averageMbps: chartAverages[direction] });
+        if (visible) visibleCount += 1;
+      });
+      if (chartPanel) chartPanel.hidden = visibleCount === 0;
+    }
 
     function setMeasurementMode(mode) {
       if (running || root.dataset.simpleRunning === "true" || root.dataset.probeRunning === "true") {
@@ -283,7 +315,7 @@
         panel.hidden = panel.dataset.measurementResult !== mode;
       });
       if (mode === "http" && selectedCriterion === "sustained") {
-        window.requestAnimationFrame(drawChart);
+        window.requestAnimationFrame(drawCharts);
       }
     }
 
@@ -304,7 +336,7 @@
         panel.hidden = panel.dataset.httpCriterionResult !== criterion;
       });
       if (criterion === "sustained") {
-        window.requestAnimationFrame(drawChart);
+        window.requestAnimationFrame(drawCharts);
       }
     }
 
@@ -342,7 +374,9 @@
       clientResults = {};
       graphSeries.upload = [];
       graphSeries.download = [];
-      drawChart();
+      chartAverages.upload = null;
+      chartAverages.download = null;
+      syncCharts();
     }
 
     async function measureLatency(signal) {
@@ -388,16 +422,25 @@
       );
     }
 
-    function appendLiveSample(direction, byteDelta, elapsedSeconds) {
+    function appendLiveSample(direction, byteDelta, elapsedSeconds, options) {
       if (byteDelta < 0 || elapsedSeconds <= 0) {
         return;
       }
-      const mbps = (byteDelta * 8) / elapsedSeconds / 1_000_000;
-      graphSeries[direction].push({
-        index: graphSeries[direction].length + 1,
-        bytes_transferred: byteDelta,
-        mbps,
-      });
+      const settings = options || {};
+      const series = graphSeries[direction];
+      const previous = series[series.length - 1];
+      if (settings.mergeShortTail && previous && elapsedSeconds < 0.5) {
+        previous.bytes_transferred += byteDelta;
+        previous.duration_seconds += elapsedSeconds;
+        previous.mbps = (previous.bytes_transferred * 8) / previous.duration_seconds / 1_000_000;
+      } else {
+        series.push({
+          index: series.length + 1,
+          bytes_transferred: byteDelta,
+          duration_seconds: elapsedSeconds,
+          mbps: (byteDelta * 8) / elapsedSeconds / 1_000_000,
+        });
+      }
       const recentSamples = graphSeries[direction].slice(-3);
       const rollingMbps = recentSamples.reduce((total, item) => total + item.mbps, 0) / recentSamples.length;
       liveSpeedText.textContent = `${formatMbps(rollingMbps)} Mbps`;
@@ -443,8 +486,7 @@
         await Promise.race([workers, wait(500, signal)]);
         const status = await getStatus(signal);
         const now = performance.now();
-        const elapsed = Math.min((now - startedAt) / 1000, durationSeconds);
-        if (phase === "measure" && now - previousSampleAt >= 900) {
+        if (phase === "measure" && now - previousSampleAt >= 1000) {
           const phaseBytes = Number(status.phase_bytes);
           appendLiveSample("upload", phaseBytes - previousBytes, (now - previousSampleAt) / 1000);
           previousBytes = phaseBytes;
@@ -454,18 +496,23 @@
       await workers;
       const finalStatus = await getStatus(signal);
       const endedAt = performance.now();
-      if (phase === "measure" && endedAt - previousSampleAt >= 250) {
+      const tailDurationSeconds = (endedAt - previousSampleAt) / 1000;
+      if (phase === "measure" && tailDurationSeconds > 0.01) {
         appendLiveSample(
           "upload",
           Number(finalStatus.phase_bytes) - previousBytes,
-          (endedAt - previousSampleAt) / 1000
+          tailDurationSeconds,
+          { mergeShortTail: true }
         );
       }
       progress.finishPhase();
       return {
         bytes_transferred: Number(finalStatus.phase_bytes),
         actual_duration_seconds: durationSeconds,
-        intervals: graphSeries.upload.map((point) => ({ bytes_transferred: point.bytes_transferred })),
+        intervals: graphSeries.upload.map((point) => ({
+          bytes_transferred: point.bytes_transferred,
+          duration_seconds: point.duration_seconds,
+        })),
       };
     }
 
@@ -515,10 +562,11 @@
             clientResults.download.bytes_transferred = totalBytes;
             clientResults.download.actual_duration_seconds = Math.max(elapsed, 0.001);
           }
-          if (phase === "measure" && now - previousSampleAt >= 900) {
+          if (phase === "measure" && now - previousSampleAt >= 1000) {
             appendLiveSample("download", totalBytes - previousBytes, (now - previousSampleAt) / 1000);
             clientResults.download.intervals = graphSeries.download.map((point) => ({
               bytes_transferred: point.bytes_transferred,
+              duration_seconds: point.duration_seconds,
             }));
             previousBytes = totalBytes;
             previousSampleAt = now;
@@ -528,14 +576,23 @@
 
       await Promise.all(Array.from({ length: HTTP_STREAM_COUNT }, (_, index) => worker(index)));
       const endedAt = performance.now();
-      if (phase === "measure" && endedAt - previousSampleAt >= 250) {
-        appendLiveSample("download", totalBytes - previousBytes, (endedAt - previousSampleAt) / 1000);
+      const tailDurationSeconds = (endedAt - previousSampleAt) / 1000;
+      if (phase === "measure" && tailDurationSeconds > 0.01) {
+        appendLiveSample(
+          "download",
+          totalBytes - previousBytes,
+          tailDurationSeconds,
+          { mergeShortTail: true }
+        );
       }
       progress.finishPhase();
       const completedResult = {
         bytes_transferred: totalBytes,
         actual_duration_seconds: Math.max((endedAt - startedAt) / 1000, 0.001),
-        intervals: graphSeries.download.map((point) => ({ bytes_transferred: point.bytes_transferred })),
+        intervals: graphSeries.download.map((point) => ({
+          bytes_transferred: point.bytes_transferred,
+          duration_seconds: point.duration_seconds,
+        })),
       };
       if (phase === "measure") {
         clientResults.download = completedResult;
@@ -589,6 +646,14 @@
         const path = direction === "upload" ? "사용자 PC → 서버" : "서버 → 사용자 PC";
         const averageMbps = Number(summary.average_mbps);
         const variability = Number(summary.variability_percent);
+        if (direction === "upload" || direction === "download") {
+          const intervals = Array.isArray(summary.intervals) ? summary.intervals : [];
+          graphSeries[direction] = intervals.map((point, index) => ({
+            index: Number(point.index) || index + 1,
+            mbps: Number(point.mbps) || 0,
+          }));
+          chartAverages[direction] = averageMbps;
+        }
 
         const card = document.createElement("div");
         card.className = "result-summary-card";
@@ -643,7 +708,8 @@
       const requested = result.requested || {};
       conditionsText.textContent = `${Number(requested.duration_seconds)}초 본 측정 · ${Number(requested.warmup_seconds)}초 워밍업 · HTTP 연결 ${Number(requested.stream_count)}개`;
       progress.complete();
-      window.requestAnimationFrame(drawChart);
+      syncCharts();
+      window.requestAnimationFrame(drawCharts);
     }
 
     async function finalizeSession(path, payload) {
@@ -739,64 +805,6 @@
       }
     }
 
-    function drawChart() {
-      if (!chart || chart.hidden || chart.clientWidth <= 0) {
-        return;
-      }
-      const context = chart.getContext("2d");
-      const ratio = window.devicePixelRatio || 1;
-      const width = Math.max(chart.clientWidth, 320);
-      const height = Math.max(chart.clientHeight, 230);
-      if (chart.width !== Math.round(width * ratio) || chart.height !== Math.round(height * ratio)) {
-        chart.width = Math.round(width * ratio);
-        chart.height = Math.round(height * ratio);
-      }
-      context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.clearRect(0, 0, width, height);
-
-      const padding = { top: 18, right: 16, bottom: 30, left: 54 };
-      const plotWidth = width - padding.left - padding.right;
-      const plotHeight = height - padding.top - padding.bottom;
-      const points = [...graphSeries.upload, ...graphSeries.download];
-      const maximum = Math.max(10, ...points.map((point) => point.mbps));
-      const maximumCount = Math.max(1, graphSeries.upload.length, graphSeries.download.length);
-
-      context.strokeStyle = "#d8ddd3";
-      context.fillStyle = "#626b5f";
-      context.font = "12px Segoe UI, Arial, sans-serif";
-      context.lineWidth = 1;
-      for (let row = 0; row <= 4; row += 1) {
-        const y = padding.top + (plotHeight * row) / 4;
-        context.beginPath();
-        context.moveTo(padding.left, y);
-        context.lineTo(width - padding.right, y);
-        context.stroke();
-        const value = maximum * (1 - row / 4);
-        context.fillText(`${value.toFixed(value >= 100 ? 0 : 1)}`, 6, y + 4);
-      }
-      context.fillText("Mbps", 6, 12);
-      context.fillText("1초 구간", width - 64, height - 8);
-
-      Object.entries(graphSeries).forEach(([direction, series]) => {
-        if (!series.length) {
-          return;
-        }
-        context.strokeStyle = SERIES_COLORS[direction];
-        context.lineWidth = 2.5;
-        context.beginPath();
-        series.forEach((point, index) => {
-          const x = padding.left + (plotWidth * index) / Math.max(maximumCount - 1, 1);
-          const y = padding.top + plotHeight - (plotHeight * point.mbps) / maximum;
-          if (index === 0) {
-            context.moveTo(x, y);
-          } else {
-            context.lineTo(x, y);
-          }
-        });
-        context.stroke();
-      });
-    }
-
     modeButtons.forEach((button) => {
       button.addEventListener("click", () => setMeasurementMode(button.dataset.measurementMode));
     });
@@ -813,7 +821,6 @@
         activeController.abort();
       }
     });
-    window.addEventListener("resize", drawChart);
     setHttpCriterion("simple");
     setMeasurementMode("http");
   }

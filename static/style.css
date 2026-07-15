@@ -382,7 +382,8 @@ select:disabled {
   transition: width 120ms linear;
 }
 
-.progress-bar[data-sustained-progress-bar] {
+.progress-bar[data-sustained-progress-bar],
+.progress-bar[data-probe-progress-bar] {
   width: 100%;
   transform: scaleX(0);
   transform-origin: left center;
@@ -499,17 +500,60 @@ select:disabled {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.throughput-chart {
-  margin-top: 16px;
-  min-height: 320px;
+.throughput-chart-grid {
+  display: grid;
+  gap: 20px;
+  margin-top: 18px;
 }
 
-.throughput-chart canvas {
+.throughput-chart-card {
+  min-width: 0;
+  margin: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.throughput-chart-card figcaption {
+  margin-bottom: 8px;
+  color: #27362f;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.throughput-chart-canvas {
+  position: relative;
+  min-width: 0;
+}
+
+.throughput-chart-canvas canvas {
   display: block;
   width: 100%;
-  height: 280px;
-  border-top: 1px solid var(--line);
+  height: 240px;
   border-bottom: 1px solid var(--line);
+  outline: none;
+  touch-action: pan-y;
+}
+
+.throughput-chart-canvas canvas:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 2;
+  max-width: calc(100% - 12px);
+  border: 1px solid #aeb8a7;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(31, 61, 50, 0.14);
+  color: #27362f;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .chart-legend {
@@ -759,11 +803,14 @@ th {
     text-align: left;
   }
 
-  .throughput-chart {
-    min-height: 270px;
+  .throughput-chart-canvas canvas {
+    height: 210px;
   }
+}
 
-  .throughput-chart canvas {
-    height: 230px;
+@media (prefers-reduced-motion: reduce) {
+  .progress-bar[data-sustained-progress-bar],
+  .progress-bar[data-probe-progress-bar] {
+    will-change: auto;
   }
 }
