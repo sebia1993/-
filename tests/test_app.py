@@ -455,8 +455,11 @@ def test_network_check_tab_and_size_options(app_client):
     assert "측정 종료 기준" in body
     assert "데이터량" in body
     assert "측정 시간" in body
-    assert "HTTP 응답시간" in body
+    assert "서버 웹 응답시간" in body
     assert "data-sustained-action" in body
+    assert "최근 3초 평균 속도" in body
+    assert "data-sustained-completed" in body
+    assert "data-sustained-technical-details" in body
     assert "Excel 결과 받기" in body
     assert "data-sustained-excel" in body
     assert "data-probe-excel" in body
@@ -465,9 +468,15 @@ def test_network_check_tab_and_size_options(app_client):
     assert "data-sustained-stream" not in body
     assert "1GB 예상 시간" in body
     assert "TCP 전송 성능 측정" in body
-    assert "업로드 실제 수신 속도" in body
-    assert "다운로드 실제 수신 속도" in body
-    assert "왕복 지연시간(RTT)" in body
+    assert "고급 비교 측정" in body
+    assert "4개 스트림 비교 측정" in body
+    assert "data-probe-four-stream" in body
+    assert "data-probe-stream=" not in body
+    assert "속도 변화 보기" in body
+    assert body.count("기술 상세 보기") == 2
+    assert "업로드 실제 수신 속도" not in body
+    assert "다운로드 실제 수신 속도" not in body
+    assert "왕복 지연시간(RTT)" not in body
     assert "data-probe-cwnd" not in body
     assert "/network-check/upload" in body
     assert "/network-check/download" in body
@@ -652,13 +661,18 @@ def test_sustained_network_js_uses_regular_post_chunks():
     assert "requestAnimationFrame(tick)" in script
     assert "style.transform = `scaleX(" in script
     assert "Math.max(currentPercent" in script
-    assert "result.status === \"success\"" in script
+    assert "result.status !== \"success\"" in script
     assert "progress.terminate(cancellationRequested" in script
     assert "function setPhase(" not in script
     assert "HTTP_STREAM_COUNT = 1" in script
     assert "stream_count: HTTP_STREAM_COUNT" in script
     assert "data-sustained-stream" not in script
     assert "selectedStreams" not in script
+    assert "slice(-3)" in script
+    assert "data-sustained-live-speed" in script
+    assert "data-sustained-completed" in script
+    assert "낮을수록 측정 중 속도가 일정함" in script
+    assert script.index("if (result.excel_url)") < script.index('if (result.status !== "success")')
 
 
 def test_probe_network_js_uses_audience_friendly_summary():
@@ -670,6 +684,14 @@ def test_probe_network_js_uses_audience_friendly_summary():
     assert "운영체제에서 제공하지 않음" in script
     assert "측정 PC → 서버" in script
     assert "서버 → 측정 PC" in script
+    assert "data-probe-four-stream" in script
+    assert "fourStreamToggle.checked ? 4 : 1" in script
+    assert "업로드·다운로드 평균 속도 차이" in script
+    assert "TCP 왕복시간(RTT)" in script
+    assert "1초 구간 최저 속도" in script
+    assert "1초 구간 최고 속도" in script
+    assert "data-probe-chart-details" in script
+    assert "data-probe-technical-details" in script
     assert "data-probe-cwnd" not in script
 
 

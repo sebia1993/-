@@ -424,6 +424,72 @@ select:disabled {
   font-size: 13px;
 }
 
+.live-measurement {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 72px;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.live-measurement span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.live-measurement strong {
+  font-size: 24px;
+  text-align: right;
+}
+
+.result-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.result-summary-card {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 164px;
+  border: 1px solid var(--success-line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--success-bg);
+}
+
+.result-summary-card h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.summary-route,
+.summary-secondary {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.summary-route {
+  margin-top: 2px;
+}
+
+.summary-speed {
+  margin: 14px 0 2px;
+  font-size: 26px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.summary-secondary + .summary-secondary {
+  margin-top: 6px;
+}
+
 .sustained-metrics {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -538,6 +604,65 @@ select:disabled {
   font-weight: 700;
 }
 
+.advanced-options,
+.result-disclosure {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.advanced-options {
+  margin: 4px 0 14px;
+}
+
+.result-disclosure {
+  margin-top: 14px;
+}
+
+.advanced-options summary,
+.result-disclosure summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.advanced-option-row {
+  margin: 12px 0 4px;
+}
+
+.advanced-options p {
+  margin: 6px 0 0 26px;
+}
+
+.technical-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+  margin: 14px 0 0;
+}
+
+.technical-meta-grid div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.technical-meta-grid dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.technical-meta-grid dd {
+  margin: 0;
+  font-weight: 700;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.disclosure-chart {
+  margin-top: 12px;
+}
+
 .section-title {
   display: flex;
   align-items: center;
@@ -613,8 +738,20 @@ th {
   .network-layout,
   .metric-grid,
   .sustained-metrics,
+  .result-summary-grid,
+  .technical-meta-grid,
   .transfer-result-details {
     grid-template-columns: 1fr;
+  }
+
+  .live-measurement {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .live-measurement strong {
+    text-align: left;
   }
 
   .throughput-chart {

@@ -28,13 +28,22 @@
     return `${mbps.toFixed(digits)} Mbps / ${(mbps / 8).toFixed(digits)} MB/s`;
   }
 
-  function median(values) {
-    if (!values.length) {
-      return 0;
+  function formatMbps(mbps) {
+    if (!Number.isFinite(mbps) || mbps < 0) {
+      return "-";
     }
-    const sorted = [...values].sort((left, right) => left - right);
-    const middle = Math.floor(sorted.length / 2);
-    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    return mbps.toFixed(mbps >= 100 ? 1 : 2);
+  }
+
+  function formatBytes(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value < 0) {
+      return "-";
+    }
+    if (value >= 1024 * 1024 * 1024) {
+      return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+    return `${(value / 1024 / 1024).toFixed(1)} MB`;
   }
 
   function wait(milliseconds, signal) {
@@ -167,7 +176,7 @@
         setPercent(
           nextPercent,
           phase.label,
-          `${elapsedSeconds.toFixed(1)} / ${phase.durationSeconds.toFixed(0)}초`
+          `약 ${Math.ceil(Math.max(phase.durationSeconds - elapsedSeconds, 0))}초 남음`
         );
         if (elapsedSeconds < phase.durationSeconds) {
           animationFrameId = window.requestAnimationFrame(tick);
@@ -176,7 +185,7 @@
         }
       }
 
-      setPercent(startPercent, label, `0.0 / ${safeDuration.toFixed(0)}초`, { forceLabel: true });
+      setPercent(startPercent, label, `약 ${Math.ceil(safeDuration)}초 남음`, { forceLabel: true });
       animationFrameId = window.requestAnimationFrame(tick);
     }
 
@@ -237,13 +246,14 @@
     const statusText = root.querySelector("[data-sustained-status]");
     const phaseText = root.querySelector("[data-sustained-phase]");
     const progressBar = root.querySelector("[data-sustained-progress-bar]");
+    const livePanel = root.querySelector("[data-sustained-live]");
+    const liveSpeedText = root.querySelector("[data-sustained-live-speed]");
+    const completedPanel = root.querySelector("[data-sustained-completed]");
+    const summaryList = root.querySelector("[data-sustained-summary]");
     const latencyText = root.querySelector("[data-sustained-latency]");
-    const averageText = root.querySelector("[data-sustained-average]");
-    const currentText = root.querySelector("[data-sustained-current]");
-    const rangeText = root.querySelector("[data-sustained-range]");
-    const medianText = root.querySelector("[data-sustained-median]");
-    const variabilityText = root.querySelector("[data-sustained-variability]");
-    const resultList = root.querySelector("[data-sustained-result-list]");
+    const conditionsText = root.querySelector("[data-sustained-conditions]");
+    const detailList = root.querySelector("[data-sustained-detail-list]");
+    const technicalDetails = root.querySelector("[data-sustained-technical-details]");
     const excelLink = root.querySelector("[data-sustained-excel]");
     const chart = root.querySelector("[data-sustained-chart]");
 
@@ -318,13 +328,14 @@
     function resetResult() {
       statusText.textContent = "준비";
       progress.reset();
+      livePanel.hidden = false;
+      liveSpeedText.textContent = "측정 준비 중";
+      completedPanel.hidden = true;
+      summaryList.innerHTML = "";
       latencyText.textContent = "-";
-      averageText.textContent = "-";
-      currentText.textContent = "-";
-      rangeText.textContent = "-";
-      medianText.textContent = "-";
-      variabilityText.textContent = "-";
-      resultList.innerHTML = "";
+      conditionsText.textContent = "-";
+      detailList.innerHTML = "";
+      technicalDetails.open = false;
       excelLink.hidden = true;
       excelLink.removeAttribute("href");
       latencySamples = [];
@@ -336,6 +347,7 @@
 
     async function measureLatency(signal) {
       statusText.textContent = "응답시간 측정 중";
+      liveSpeedText.textContent = "측정 준비 중";
       const samples = [];
       progress.setLatencyStep(0, 6);
       for (let index = 0; index < 6; index += 1) {
@@ -351,7 +363,6 @@
         }
         progress.setLatencyStep(index + 1, 6);
       }
-      latencyText.textContent = `${median(samples).toFixed(2)} ms`;
       return samples;
     }
 
@@ -387,8 +398,9 @@
         bytes_transferred: byteDelta,
         mbps,
       });
-      currentText.textContent = formatSpeed(mbps);
-      drawChart();
+      const recentSamples = graphSeries[direction].slice(-3);
+      const rollingMbps = recentSamples.reduce((total, item) => total + item.mbps, 0) / recentSamples.length;
+      liveSpeedText.textContent = `${formatMbps(rollingMbps)} Mbps`;
     }
 
     async function runUploadPhase(phase, chunkSize, signal) {
@@ -398,6 +410,7 @@
       const deadline = startedAt + durationSeconds * 1000;
       const body = new Uint8Array(chunkSize);
       const phaseLabel = phase === "warmup" ? "업로드 워밍" : "업로드 본 측정";
+      liveSpeedText.textContent = phase === "warmup" ? "측정 준비 중" : "속도 계산 중";
       progress.startPhase(phaseLabel, durationSeconds);
       let workersFinished = false;
       let previousBytes = 0;
@@ -436,7 +449,6 @@
           appendLiveSample("upload", phaseBytes - previousBytes, (now - previousSampleAt) / 1000);
           previousBytes = phaseBytes;
           previousSampleAt = now;
-          averageText.textContent = formatSpeed((phaseBytes * 8) / Math.max(elapsed, 0.001) / 1_000_000);
         }
       }
       await workers;
@@ -462,6 +474,7 @@
       const durationSeconds = Number(phaseInfo.duration_seconds);
       const startedAt = performance.now();
       const phaseLabel = phase === "warmup" ? "다운로드 워밍" : "다운로드 본 측정";
+      liveSpeedText.textContent = phase === "warmup" ? "측정 준비 중" : "속도 계산 중";
       progress.startPhase(phaseLabel, durationSeconds);
       let totalBytes = 0;
       let previousBytes = 0;
@@ -509,7 +522,6 @@
             }));
             previousBytes = totalBytes;
             previousSampleAt = now;
-            averageText.textContent = formatSpeed((totalBytes * 8) / Math.max(elapsed, 0.001) / 1_000_000);
           }
         }
       }
@@ -555,26 +567,72 @@
     }
 
     function renderCompletedResult(result) {
-      resultList.innerHTML = "";
-      Object.entries(result.directions || {}).forEach(([direction, summary]) => {
-        const item = document.createElement("div");
-        item.className = "result-item";
-        const label = direction === "upload" ? "업로드" : "다운로드";
-        item.textContent = `${label}: ${formatSpeed(Number(summary.average_mbps))} · 중앙 ${formatSpeed(Number(summary.median_mbps))} · 변동 ${Number(summary.variability_percent).toFixed(1)}%`;
-        resultList.appendChild(item);
-      });
-      const summaries = Object.values(result.directions || {});
-      if (summaries.length) {
-        const averageValues = summaries.map((summary) => Number(summary.average_mbps));
-        const minimumValues = summaries.map((summary) => Number(summary.min_mbps));
-        const maximumValues = summaries.map((summary) => Number(summary.max_mbps));
-        const medianValues = summaries.map((summary) => Number(summary.median_mbps));
-        const variabilityValues = summaries.map((summary) => Number(summary.variability_percent));
-        averageText.textContent = averageValues.map(formatSpeed).join(" / ");
-        rangeText.textContent = `${formatSpeed(Math.min(...minimumValues))} / ${formatSpeed(Math.max(...maximumValues))}`;
-        medianText.textContent = medianValues.map(formatSpeed).join(" / ");
-        variabilityText.textContent = `${Math.max(...variabilityValues).toFixed(1)}%`;
+      if (result.excel_url) {
+        excelLink.href = new URL(result.excel_url, window.location.href).toString();
+        excelLink.hidden = false;
+        excelLink.setAttribute("download", "");
       }
+      if (result.status !== "success") {
+        completedPanel.hidden = true;
+        livePanel.hidden = false;
+        liveSpeedText.textContent = "결과 없음";
+        return;
+      }
+
+      livePanel.hidden = true;
+      completedPanel.hidden = false;
+      summaryList.innerHTML = "";
+      detailList.innerHTML = "";
+      technicalDetails.open = false;
+      Object.entries(result.directions || {}).forEach(([direction, summary]) => {
+        const label = direction === "upload" ? "업로드" : "다운로드";
+        const path = direction === "upload" ? "사용자 PC → 서버" : "서버 → 사용자 PC";
+        const averageMbps = Number(summary.average_mbps);
+        const variability = Number(summary.variability_percent);
+
+        const card = document.createElement("div");
+        card.className = "result-summary-card";
+        const heading = document.createElement("h3");
+        heading.textContent = `${label} 평균 속도`;
+        const route = document.createElement("span");
+        route.className = "summary-route";
+        route.textContent = path;
+        const primary = document.createElement("strong");
+        primary.className = "summary-speed";
+        primary.textContent = `${formatMbps(averageMbps)} Mbps`;
+        const secondary = document.createElement("span");
+        secondary.className = "summary-secondary";
+        secondary.textContent = `초당 파일 전송량 ${formatMbps(averageMbps / 8)} MB/s`;
+        const variation = document.createElement("span");
+        variation.className = "summary-secondary";
+        variation.textContent = `속도 변동률 ${variability.toFixed(1)}% · 낮을수록 측정 중 속도가 일정함`;
+        card.append(heading, route, primary, secondary, variation);
+        summaryList.appendChild(card);
+
+        const item = document.createElement("div");
+        item.className = "transfer-result";
+        const title = document.createElement("h3");
+        title.textContent = `${label} · ${path}`;
+        const details = document.createElement("dl");
+        details.className = "transfer-result-details";
+        [
+          ["1초 구간 중앙 속도", formatSpeed(Number(summary.median_mbps))],
+          ["1초 구간 최저 속도", formatSpeed(Number(summary.min_mbps))],
+          ["1초 구간 최고 속도", formatSpeed(Number(summary.max_mbps))],
+          ["총 전송량", formatBytes(summary.bytes_transferred)],
+          ["실제 측정시간", `${Number(summary.actual_duration_seconds).toFixed(1)}초`],
+        ].forEach(([termText, descriptionText]) => {
+          const row = document.createElement("div");
+          const term = document.createElement("dt");
+          const description = document.createElement("dd");
+          term.textContent = termText;
+          description.textContent = descriptionText;
+          row.append(term, description);
+          details.appendChild(row);
+        });
+        item.append(title, details);
+        detailList.appendChild(item);
+      });
       if (
         result.http_latency &&
         result.http_latency.median_ms !== null &&
@@ -582,15 +640,10 @@
       ) {
         latencyText.textContent = `${Number(result.http_latency.median_ms).toFixed(2)} ms`;
       }
-      if (result.excel_url) {
-        excelLink.href = new URL(result.excel_url, window.location.href).toString();
-        excelLink.hidden = false;
-        excelLink.setAttribute("download", "");
-      }
-      if (result.status === "success") {
-        progress.complete();
-      }
-      drawChart();
+      const requested = result.requested || {};
+      conditionsText.textContent = `${Number(requested.duration_seconds)}초 본 측정 · ${Number(requested.warmup_seconds)}초 워밍업 · HTTP 연결 ${Number(requested.stream_count)}개`;
+      progress.complete();
+      window.requestAnimationFrame(drawChart);
     }
 
     async function finalizeSession(path, payload) {

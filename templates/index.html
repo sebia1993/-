@@ -260,13 +260,14 @@
               </select>
             </label>
 
-            <fieldset class="control-group">
-              <legend>TCP 스트림</legend>
-              <div class="segment-control">
-                <button type="button" class="is-active" data-probe-stream="1" aria-pressed="true" disabled>1개</button>
-                <button type="button" data-probe-stream="4" aria-pressed="false" disabled>4개</button>
-              </div>
-            </fieldset>
+            <details class="advanced-options" data-probe-advanced-options>
+              <summary data-probe-advanced-summary>고급 비교 측정</summary>
+              <label class="checkbox-line advanced-option-row">
+                <input type="checkbox" data-probe-four-stream disabled>
+                <span>4개 스트림 비교 측정</span>
+              </label>
+              <p class="muted">여러 TCP 연결의 합산 처리량을 확인합니다. 일반 측정보다 네트워크 부하가 증가합니다.</p>
+            </details>
 
             <div class="network-actions">
               <button type="button" class="secondary" data-probe-action="upload" disabled>업로드 측정</button>
@@ -326,42 +327,36 @@
 
               <div class="sustained-phase" data-sustained-phase>대기</div>
 
-              <dl class="metric-grid sustained-metrics">
-                <div>
-                  <dt>HTTP 응답시간</dt>
-                  <dd data-sustained-latency>-</dd>
-                </div>
-                <div>
-                  <dt>평균 속도</dt>
-                  <dd data-sustained-average>-</dd>
-                </div>
-                <div>
-                  <dt>현재 속도</dt>
-                  <dd data-sustained-current>-</dd>
-                </div>
-                <div>
-                  <dt>최소 / 최대</dt>
-                  <dd data-sustained-range>-</dd>
-                </div>
-                <div>
-                  <dt>중앙값</dt>
-                  <dd data-sustained-median>-</dd>
-                </div>
-                <div>
-                  <dt>변동률</dt>
-                  <dd data-sustained-variability>-</dd>
-                </div>
-              </dl>
-
-              <div class="throughput-chart">
-                <canvas data-sustained-chart width="900" height="280" aria-label="1초 구간 HTTP 처리량 그래프"></canvas>
-                <div class="chart-legend">
-                  <span><i class="legend-upload"></i>업로드</span>
-                  <span><i class="legend-download"></i>다운로드</span>
-                </div>
+              <div class="live-measurement" data-sustained-live>
+                <span>최근 3초 평균 속도</span>
+                <strong data-sustained-live-speed>측정 준비 중</strong>
               </div>
 
-              <div class="result-list" data-sustained-result-list></div>
+              <div data-sustained-completed hidden>
+                <div class="result-summary-grid" data-sustained-summary></div>
+
+                <p class="measurement-explanation">
+                  평균 속도는 실제 전송량을 본 측정 시간으로 나눈 값입니다. MB/s는 1초 동안 전송한 파일 용량입니다.
+                </p>
+
+                <div class="throughput-chart" data-sustained-chart-panel>
+                  <canvas data-sustained-chart width="900" height="280" aria-label="1초 구간 HTTP 처리량 그래프"></canvas>
+                  <div class="chart-legend">
+                    <span><i class="legend-upload"></i>업로드</span>
+                    <span><i class="legend-download"></i>다운로드</span>
+                  </div>
+                </div>
+
+                <details class="result-disclosure" data-sustained-technical-details>
+                  <summary>기술 상세 보기</summary>
+                  <dl class="technical-meta-grid">
+                    <div><dt>서버 웹 응답시간</dt><dd data-sustained-latency>-</dd></div>
+                    <div><dt>측정 조건</dt><dd data-sustained-conditions>-</dd></div>
+                  </dl>
+                  <div class="result-list transfer-result-list" data-sustained-detail-list></div>
+                </details>
+
+              </div>
               <div class="actions sustained-result-actions">
                 <a class="secondary" data-sustained-excel hidden>Excel 결과 받기</a>
               </div>
@@ -380,26 +375,30 @@
 
             <div class="sustained-phase" data-probe-phase>클라이언트 연결 대기</div>
 
-            <dl class="metric-grid sustained-metrics">
-              <div><dt>업로드 실제 수신 속도</dt><dd data-probe-upload>측정 안 함</dd></div>
-              <div><dt>다운로드 실제 수신 속도</dt><dd data-probe-download>측정 안 함</dd></div>
-              <div><dt>왕복 지연시간(RTT)</dt><dd data-probe-rtt>-</dd></div>
-              <div><dt>TCP 재전송</dt><dd data-probe-retrans>-</dd></div>
-              <div><dt>측정 조건</dt><dd data-probe-conditions>-</dd></div>
-              <div><dt>측정 PC</dt><dd data-probe-client>-</dd></div>
-            </dl>
+            <div class="result-summary-grid" data-probe-summary></div>
 
-            <div class="throughput-chart">
-              <canvas data-probe-chart width="900" height="280" aria-label="1초 구간 TCP 수신 처리량 그래프"></canvas>
-              <div class="chart-legend">
-                <span><i class="legend-upload"></i>업로드</span>
-                <span><i class="legend-download"></i>다운로드</span>
+            <details class="result-disclosure" data-probe-chart-details hidden>
+              <summary>속도 변화 보기</summary>
+              <div class="throughput-chart disclosure-chart">
+                <canvas data-probe-chart width="900" height="280" aria-label="1초 구간 TCP 수신 처리량 그래프"></canvas>
+                <div class="chart-legend">
+                  <span><i class="legend-upload"></i>업로드</span>
+                  <span><i class="legend-download"></i>다운로드</span>
+                </div>
               </div>
-            </div>
+            </details>
 
-            <div class="result-list transfer-result-list" data-probe-result-list></div>
+            <details class="result-disclosure" data-probe-technical-details hidden>
+              <summary>기술 상세 보기</summary>
+              <dl class="technical-meta-grid">
+                <div><dt>측정 조건</dt><dd data-probe-conditions>-</dd></div>
+                <div><dt>측정 PC</dt><dd data-probe-client>-</dd></div>
+              </dl>
+              <div class="result-list transfer-result-list" data-probe-detail-list></div>
+            </details>
+
             <p class="measurement-explanation">
-              실제 수신 속도는 반대편에서 받은 데이터 기준입니다. 기준 속도가 설정되지 않아 정상·비정상은 자동 판정하지 않습니다.
+              평균 속도는 반대편 장비가 실제로 받은 데이터 기준입니다. 측정값에는 네트워크뿐 아니라 측정 PC와 서버 성능도 포함됩니다. 기준 속도가 설정되지 않아 정상·비정상은 자동 판정하지 않습니다.
             </p>
             <div class="actions sustained-result-actions">
               <a class="secondary" data-probe-excel hidden>Excel 결과 받기</a>

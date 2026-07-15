@@ -1,6 +1,5 @@
 (function () {
   const COLORS = { upload: "#246b54", download: "#c15f2e" };
-  const NOT_MEASURED = "측정 안 함";
   const TELEMETRY_UNAVAILABLE = "운영체제에서 제공하지 않음";
 
   function formatSpeed(value) {
@@ -39,14 +38,7 @@
     const sentBytes = Number(sender && sender.bytes);
     if (!Number.isFinite(retransmittedBytes) || retransmittedBytes < 0) return TELEMETRY_UNAVAILABLE;
     if (!Number.isFinite(sentBytes) || sentBytes <= 0) return formatBytes(retransmittedBytes);
-    return `${formatBytes(retransmittedBytes)} (전체 송신량의 ${(retransmittedBytes / sentBytes * 100).toFixed(3)}%)`;
-  }
-
-  function formatDirectionValues(results, formatter) {
-    return ["upload", "download"]
-      .filter((direction) => results[direction])
-      .map((direction) => `${directionLabel(direction)} ${formatter(results[direction])}`)
-      .join(" · ") || NOT_MEASURED;
+    return `${formatBytes(retransmittedBytes)} (전체 송신량의 ${(retransmittedBytes / sentBytes * 100).toFixed(2)}%)`;
   }
 
   function formatDirectionDifference(results) {
@@ -54,7 +46,7 @@
     const download = Number(results.download && results.download.receiver && results.download.receiver.average_mbps);
     const maximum = Math.max(upload, download);
     if (!Number.isFinite(upload) || !Number.isFinite(download) || maximum <= 0) return "";
-    return `업로드·다운로드 실제 수신 속도 차이: ${(Math.abs(upload - download) / maximum * 100).toFixed(3)}%`;
+    return `업로드·다운로드 평균 속도 차이: ${(Math.abs(upload - download) / maximum * 100).toFixed(1)}%`;
   }
 
   async function fetchJson(url, options, label) {
@@ -78,35 +70,40 @@
     const packageAddress = root.querySelector("[data-probe-client-package-address]");
     const agentSelect = root.querySelector("[data-probe-agent]");
     const durationSelect = root.querySelector("[data-probe-duration]");
-    const streamButtons = root.querySelectorAll("[data-probe-stream]");
+    const fourStreamToggle = root.querySelector("[data-probe-four-stream]");
+    const advancedSummary = root.querySelector("[data-probe-advanced-summary]");
     const actionButtons = root.querySelectorAll("[data-probe-action]");
     const cancelButton = root.querySelector("[data-probe-cancel]");
     const modeButtons = root.querySelectorAll("[data-measurement-mode]");
     const statusText = root.querySelector("[data-probe-status]");
     const phaseText = root.querySelector("[data-probe-phase]");
     const progressBar = root.querySelector("[data-probe-progress-bar]");
-    const uploadText = root.querySelector("[data-probe-upload]");
-    const downloadText = root.querySelector("[data-probe-download]");
-    const rttText = root.querySelector("[data-probe-rtt]");
-    const retransText = root.querySelector("[data-probe-retrans]");
+    const summaryList = root.querySelector("[data-probe-summary]");
+    const chartDetails = root.querySelector("[data-probe-chart-details]");
+    const technicalDetails = root.querySelector("[data-probe-technical-details]");
     const conditionsText = root.querySelector("[data-probe-conditions]");
     const clientText = root.querySelector("[data-probe-client]");
-    const resultList = root.querySelector("[data-probe-result-list]");
+    const detailList = root.querySelector("[data-probe-detail-list]");
     const excelLink = root.querySelector("[data-probe-excel]");
     const criterionButtons = root.querySelectorAll("[data-http-criterion]");
     const chart = root.querySelector("[data-probe-chart]");
 
     let serviceAvailable = false;
     let running = false;
-    let selectedStreams = 1;
     let activeSessionId = "";
     let graphSeries = { upload: [], download: [] };
+
+    function updateAdvancedSummary() {
+      advancedSummary.textContent = fourStreamToggle.checked
+        ? "고급 비교 측정 · 4개 스트림 사용 중"
+        : "고급 비교 측정";
+    }
 
     function setControlsEnabled() {
       const enabled = serviceAvailable && Boolean(agentSelect.value) && !running;
       agentSelect.disabled = !serviceAvailable || running;
       durationSelect.disabled = !enabled;
-      streamButtons.forEach((button) => { button.disabled = !enabled; });
+      fourStreamToggle.disabled = !enabled;
       actionButtons.forEach((button) => { button.disabled = !enabled; });
       modeButtons.forEach((button) => { button.disabled = running; });
       criterionButtons.forEach((button) => { button.disabled = running; });
@@ -119,13 +116,14 @@
       statusText.textContent = "준비";
       phaseText.textContent = "TCP 전송 성능 측정 시작 대기";
       progressBar.style.width = "0%";
-      uploadText.textContent = NOT_MEASURED;
-      downloadText.textContent = NOT_MEASURED;
-      rttText.textContent = "-";
-      retransText.textContent = "-";
+      summaryList.innerHTML = "";
+      chartDetails.hidden = true;
+      chartDetails.open = false;
+      technicalDetails.hidden = true;
+      technicalDetails.open = false;
       conditionsText.textContent = "-";
       clientText.textContent = "-";
-      resultList.innerHTML = "";
+      detailList.innerHTML = "";
       excelLink.hidden = true;
       excelLink.removeAttribute("href");
       graphSeries = { upload: [], download: [] };
@@ -214,11 +212,26 @@
       const sender = combined.sender;
       const receiver = combined.receiver;
       const telemetry = sender.telemetry || {};
-      const directionSpeedText = direction === "upload" ? uploadText : downloadText;
-      directionSpeedText.textContent = formatSpeed(receiver.average_mbps);
       graphSeries[direction] = Array.isArray(receiver.intervals)
         ? receiver.intervals.map((item) => Number(item.mbps) || 0)
         : [];
+
+      const summary = document.createElement("div");
+      summary.className = "result-summary-card";
+      const summaryHeading = document.createElement("h3");
+      summaryHeading.textContent = `${directionLabel(direction)} 평균 속도`;
+      const route = document.createElement("span");
+      route.className = "summary-route";
+      route.textContent = directionPath(direction);
+      const primary = document.createElement("strong");
+      primary.className = "summary-speed";
+      primary.textContent = `${Number(receiver.average_mbps).toFixed(1)} Mbps`;
+      const secondary = document.createElement("span");
+      secondary.className = "summary-secondary";
+      secondary.textContent = `초당 파일 전송량 ${(Number(receiver.average_mbps) / 8).toFixed(1)} MB/s`;
+      summary.append(summaryHeading, route, primary, secondary);
+      summaryList.appendChild(summary);
+
       const item = document.createElement("div");
       item.className = "transfer-result";
       const title = document.createElement("h3");
@@ -226,10 +239,11 @@
       const details = document.createElement("dl");
       details.className = "transfer-result-details";
       [
-        ["실제 수신 평균", formatSpeed(receiver.average_mbps)],
-        ["1초 중앙값", formatSpeed(receiver.median_mbps)],
-        ["1초 최소 속도", formatSpeed(receiver.min_mbps)],
-        ["1초 최대 속도", formatSpeed(receiver.max_mbps)],
+        ["1초 구간 중앙 속도", formatSpeed(receiver.median_mbps)],
+        ["1초 구간 최저 속도", formatSpeed(receiver.min_mbps)],
+        ["1초 구간 최고 속도", formatSpeed(receiver.max_mbps)],
+        ["TCP 왕복시간(RTT)", formatRtt(telemetry)],
+        ["TCP 재전송량", formatRetransmission(sender, telemetry)],
       ].forEach(([label, value]) => {
         const row = document.createElement("div");
         const term = document.createElement("dt");
@@ -240,7 +254,7 @@
         details.appendChild(row);
       });
       item.append(title, details);
-      resultList.appendChild(item);
+      detailList.appendChild(item);
     }
 
     function renderSession(payload) {
@@ -251,28 +265,27 @@
       if (payload.requested) {
         conditionsText.textContent = `${Number(payload.requested.duration_seconds)}초 · TCP ${Number(payload.requested.stream_count)}개 스트림`;
       }
-      resultList.innerHTML = "";
+      summaryList.innerHTML = "";
+      detailList.innerHTML = "";
       graphSeries = { upload: [], download: [] };
       const results = payload.results || {};
-      uploadText.textContent = NOT_MEASURED;
-      downloadText.textContent = NOT_MEASURED;
-      Object.entries(results).forEach(([direction, result]) => renderPhaseResult(direction, result));
-      rttText.textContent = formatDirectionValues(
-        results,
-        (combined) => formatRtt((combined.sender || {}).telemetry)
-      );
-      retransText.textContent = formatDirectionValues(
-        results,
-        (combined) => formatRetransmission(combined.sender || {}, (combined.sender || {}).telemetry)
-      );
-      const difference = formatDirectionDifference(results);
-      if (difference) {
-        const comparison = document.createElement("p");
-        comparison.className = "measurement-explanation probe-comparison";
-        comparison.textContent = difference;
-        resultList.appendChild(comparison);
+      const completed = payload.status === "completed" && payload.persistence_complete !== false;
+      chartDetails.hidden = !completed;
+      technicalDetails.hidden = !completed;
+      if (completed) {
+        Object.entries(results).forEach(([direction, result]) => renderPhaseResult(direction, result));
+        const difference = formatDirectionDifference(results);
+        if (difference) {
+          const comparison = document.createElement("p");
+          comparison.className = "measurement-explanation probe-comparison";
+          comparison.textContent = difference;
+          detailList.appendChild(comparison);
+        }
+        if (chartDetails.open) drawChart();
+      } else {
+        chartDetails.open = false;
+        technicalDetails.open = false;
       }
-      drawChart();
       if (payload.error) phaseText.textContent = payload.error;
       if (payload.excel_url) {
         excelLink.href = payload.excel_url;
@@ -306,6 +319,7 @@
 
     async function startMeasurement(direction) {
       const durationSeconds = Number(durationSelect.value);
+      const selectedStreams = fourStreamToggle.checked ? 4 : 1;
       if (!agentSelect.value) return;
       if ((durationSeconds === 30 || selectedStreams === 4 || direction === "full") &&
           !window.confirm("선택한 TCP 측정은 사내망 부하가 커질 수 있습니다. 시작할까요?")) return;
@@ -349,7 +363,7 @@
     }
 
     function drawChart() {
-      if (!chart) return;
+      if (!chart || !chartDetails.open) return;
       const rect = chart.getBoundingClientRect();
       const ratio = window.devicePixelRatio || 1;
       const width = Math.max(Math.floor(rect.width || 600), 320);
@@ -392,24 +406,19 @@
       context.fillText("초", width - 24, height - 8);
     }
 
-    streamButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        selectedStreams = Number(button.dataset.probeStream);
-        streamButtons.forEach((item) => {
-          const active = item === button;
-          item.classList.toggle("is-active", active);
-          item.setAttribute("aria-pressed", active ? "true" : "false");
-        });
-      });
-    });
     actionButtons.forEach((button) => button.addEventListener("click", () => startMeasurement(button.dataset.probeAction)));
     agentSelect.addEventListener("change", setControlsEnabled);
+    fourStreamToggle.addEventListener("change", updateAdvancedSummary);
     packageLink.addEventListener("click", (event) => {
       if (packageLink.getAttribute("aria-disabled") === "true") event.preventDefault();
     });
     cancelButton.addEventListener("click", cancelMeasurement);
+    chartDetails.addEventListener("toggle", () => {
+      if (chartDetails.open) window.requestAnimationFrame(drawChart);
+    });
     window.addEventListener("resize", drawChart);
     window.setInterval(() => { if (!running) refreshAgents(); }, 3000);
+    updateAdvancedSummary();
     resetResult();
     refreshAgents();
   }
