@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 import threading
 import time
 from pathlib import Path
@@ -108,6 +109,77 @@ def test_upload_saves_file_and_csv(app_client):
     assert row["storage_subdir"] == "case-001"
     assert row["memo"] == "장애 로그"
     assert Path(row["storage_path"]).read_bytes() == b"hello"
+
+
+def test_upload_fsyncs_temporary_file_before_atomic_replace(app_client, monkeypatch):
+    client, config, _ = app_client
+    events = []
+    original_fsync = os.fsync
+    original_replace = os.replace
+
+    def recording_fsync(file_descriptor):
+        events.append("fsync")
+        return original_fsync(file_descriptor)
+
+    def recording_replace(source, destination):
+        if Path(source).suffix == ".part":
+            events.append("replace")
+            assert "fsync" in events
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(app_module.os, "fsync", recording_fsync)
+    monkeypatch.setattr(app_module.os, "replace", recording_replace)
+
+    response = post_file(client, filename="atomic.txt", content=b"complete")
+
+    assert response.status_code == 200
+    assert events.index("fsync") < events.index("replace")
+    assert (config.storage_root / "atomic.txt").read_bytes() == b"complete"
+    assert list(config.storage_root.rglob(f"{app_module.UPLOAD_ARTIFACT_PREFIX}*")) == []
+
+
+def test_upload_replace_failure_removes_temporary_artifacts(app_client, monkeypatch):
+    client, config, _ = app_client
+    original_replace = os.replace
+
+    def fail_upload_replace(source, destination):
+        if Path(source).suffix == ".part":
+            raise OSError("replace failed")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(app_module.os, "replace", fail_upload_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        post_file(client, filename="incomplete.txt", content=b"partial")
+
+    assert not (config.storage_root / "incomplete.txt").exists()
+    assert list(config.storage_root.rglob(f"{app_module.UPLOAD_ARTIFACT_PREFIX}*")) == []
+
+
+def test_cleanup_stale_upload_artifacts_only_removes_old_project_files(tmp_path):
+    storage_root = tmp_path / "uploads"
+    nested = storage_root / "case-001"
+    nested.mkdir(parents=True)
+    old_part = nested / f"{app_module.UPLOAD_ARTIFACT_PREFIX}old.part"
+    old_lock = nested / f"{app_module.UPLOAD_ARTIFACT_PREFIX}old.lock"
+    recent_part = nested / f"{app_module.UPLOAD_ARTIFACT_PREFIX}recent.part"
+    user_part = nested / "capture.part"
+    for path in (old_part, old_lock, recent_part, user_part):
+        path.write_bytes(b"data")
+    os.utime(old_part, (100, 100))
+    os.utime(old_lock, (100, 100))
+
+    removed = app_module.cleanup_stale_upload_artifacts(
+        storage_root,
+        older_than_seconds=100,
+        now=300,
+    )
+
+    assert removed == 2
+    assert not old_part.exists()
+    assert not old_lock.exists()
+    assert recent_part.exists()
+    assert user_part.exists()
 
 
 def test_upload_log_failure_removes_saved_file(app_client, monkeypatch):

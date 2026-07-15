@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import argparse
+import hashlib
 import ipaddress
 import os
 import re
@@ -85,6 +86,8 @@ MEGABYTE = 1024 * 1024
 NETWORK_CHECK_CHUNK_SIZE = MEGABYTE
 NETWORK_CHECK_CHUNK = bytes(index % 251 for index in range(NETWORK_CHECK_CHUNK_SIZE))
 NETWORK_CHECK_UPLOAD_SESSION_TTL_SECONDS = 15 * 60
+UPLOAD_ARTIFACT_PREFIX = ".internal-upload-"
+UPLOAD_ARTIFACT_STALE_SECONDS = 24 * 60 * 60
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -126,6 +129,15 @@ class NetworkCheckUploadSession:
     started_at: float
     bytes_received: int = 0
     expiry_timer: threading.Timer | None = None
+
+
+@dataclass(frozen=True)
+class UploadReservation:
+    upload_id: str
+    stored_filename: str
+    target_path: Path
+    temporary_path: Path
+    lock_path: Path
 
 
 class UploadConflictError(RuntimeError):
@@ -195,6 +207,7 @@ def parse_csv_list(value: str) -> tuple[str, ...]:
 
 def ensure_directories(config: AppConfig) -> None:
     config.storage_root.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_upload_artifacts(config.storage_root)
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
     ensure_log_file(config.log_path)
     ensure_network_check_log_file(config.network_check_log_path)
@@ -269,12 +282,83 @@ def generate_upload_id(now: datetime | None = None) -> str:
     return f"{current.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 
+def cleanup_stale_upload_artifacts(
+    storage_root: Path,
+    *,
+    older_than_seconds: float = UPLOAD_ARTIFACT_STALE_SECONDS,
+    now: float | None = None,
+) -> int:
+    current_time = time.time() if now is None else now
+    removed = 0
+    for path in storage_root.rglob(f"{UPLOAD_ARTIFACT_PREFIX}*"):
+        if path.suffix not in {".part", ".lock"}:
+            continue
+        try:
+            if not path.is_file() or current_time - path.stat().st_mtime < older_than_seconds:
+                continue
+            path.unlink()
+            removed += 1
+        except (FileNotFoundError, OSError):
+            continue
+    return removed
+
+
+def _upload_lock_path(storage_dir: Path, stored_filename: str) -> Path:
+    digest = hashlib.sha256(stored_filename.casefold().encode("utf-8")).hexdigest()
+    return storage_dir / f"{UPLOAD_ARTIFACT_PREFIX}{digest}.lock"
+
+
+def _try_reserve_upload_target(
+    storage_dir: Path,
+    upload_id: str,
+    stored_filename: str,
+) -> UploadReservation | None:
+    target_path = storage_dir / stored_filename
+    lock_path = _upload_lock_path(storage_dir, stored_filename)
+    try:
+        lock_descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return None
+    try:
+        os.close(lock_descriptor)
+    except Exception:
+        lock_path.unlink(missing_ok=True)
+        raise
+
+    temporary_path = storage_dir / f"{UPLOAD_ARTIFACT_PREFIX}{upload_id}.part"
+    temporary_created = False
+    keep_reservation = False
+    try:
+        if target_path.exists():
+            return None
+        temporary_descriptor = os.open(
+            temporary_path,
+            os.O_CREAT | os.O_EXCL | os.O_RDWR,
+            0o600,
+        )
+        temporary_created = True
+        os.close(temporary_descriptor)
+        keep_reservation = True
+        return UploadReservation(
+            upload_id=upload_id,
+            stored_filename=stored_filename,
+            target_path=target_path,
+            temporary_path=temporary_path,
+            lock_path=lock_path,
+        )
+    finally:
+        if not keep_reservation:
+            if temporary_created:
+                temporary_path.unlink(missing_ok=True)
+            lock_path.unlink(missing_ok=True)
+
+
 def reserve_upload_target(
     storage_dir: Path,
     original_filename: str,
     *,
     confirm_duplicate: bool,
-) -> tuple[str, str, Path]:
+) -> UploadReservation:
     storage_dir.mkdir(parents=True, exist_ok=True)
     original_target = storage_dir / original_filename
     original_exists = original_target.exists()
@@ -283,24 +367,37 @@ def reserve_upload_target(
 
     upload_id = generate_upload_id()
     if not original_exists:
-        try:
-            original_target.touch(exist_ok=False)
-        except FileExistsError:
-            if not confirm_duplicate:
-                raise UploadConflictError from None
-        else:
-            return upload_id, original_filename, original_target
+        reservation = _try_reserve_upload_target(storage_dir, upload_id, original_filename)
+        if reservation is not None:
+            return reservation
+        if not confirm_duplicate:
+            raise UploadConflictError
 
     for _ in range(10):
         stored_filename = f"{upload_id}_{original_filename}"
-        target_path = storage_dir / stored_filename
-        try:
-            target_path.touch(exist_ok=False)
-        except FileExistsError:
-            upload_id = generate_upload_id()
-            continue
-        return upload_id, stored_filename, target_path
+        reservation = _try_reserve_upload_target(storage_dir, upload_id, stored_filename)
+        if reservation is not None:
+            return reservation
+        upload_id = generate_upload_id()
     raise OSError("고유한 업로드 저장 경로를 예약할 수 없습니다.")
+
+
+def commit_uploaded_file(uploaded_file, reservation: UploadReservation) -> None:
+    with reservation.temporary_path.open("r+b") as handle:
+        handle.seek(0)
+        handle.truncate(0)
+        uploaded_file.save(handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(reservation.temporary_path, reservation.target_path)
+
+
+def release_upload_reservation(reservation: UploadReservation) -> None:
+    for path in (reservation.temporary_path, reservation.lock_path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            continue
 
 
 def detect_lan_ip() -> str:
@@ -700,7 +797,7 @@ def create_app(
 
         original_filename = safe_filename(uploaded_file.filename)
         try:
-            upload_id, stored_filename, target_path = reserve_upload_target(
+            reservation = reserve_upload_target(
                 storage_dir,
                 original_filename,
                 confirm_duplicate=confirm_duplicate,
@@ -716,24 +813,29 @@ def create_app(
                 memo=memo,
             )
 
+        target_committed = False
         try:
-            uploaded_file.save(target_path)
+            commit_uploaded_file(uploaded_file, reservation)
+            target_committed = True
 
-            download_url = build_download_url(upload_id, config)
+            download_url = build_download_url(reservation.upload_id, config)
             row = {
-                "upload_id": upload_id,
+                "upload_id": reservation.upload_id,
                 "uploaded_at": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z"),
                 "original_filename": original_filename,
-                "stored_filename": stored_filename,
+                "stored_filename": reservation.stored_filename,
                 "storage_subdir": normalized_subdir,
-                "storage_path": str(target_path.resolve()),
+                "storage_path": str(reservation.target_path.resolve()),
                 "memo": memo,
                 "download_url": download_url,
             }
             append_upload_log(row, config)
         except Exception:
-            cleanup_created_file(target_path, existed_before=False)
+            if target_committed:
+                cleanup_created_file(reservation.target_path, existed_before=False)
             raise
+        finally:
+            release_upload_reservation(reservation)
 
         return render_index(
             result={
