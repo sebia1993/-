@@ -67,7 +67,7 @@ def test_disabled_probe_api_and_ui_are_available(tmp_path):
     package = client.get("/api/network-probe/client-package.zip")
     assert package.status_code == 503
     index_text = index.get_data(as_text=True)
-    assert "TCP 정밀 측정" in index_text
+    assert "TCP 전송 성능 측정" in index_text
     assert "Windows 클라이언트 ZIP 받기" in index_text
     assert 'data-probe-client-package-url="/api/network-probe/client-package.zip"' in index_text
     assert "network_probe.js" in index_text

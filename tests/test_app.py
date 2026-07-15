@@ -333,6 +333,11 @@ def test_network_check_tab_and_size_options(app_client):
     assert "data-sustained-json" not in body
     assert "data-sustained-stream" not in body
     assert "1GB 예상 시간" in body
+    assert "TCP 전송 성능 측정" in body
+    assert "업로드 실제 수신 속도" in body
+    assert "다운로드 실제 수신 속도" in body
+    assert "왕복 지연시간(RTT)" in body
+    assert "data-probe-cwnd" not in body
     assert "/network-check/upload" in body
     assert "/network-check/download" in body
 
@@ -523,6 +528,18 @@ def test_sustained_network_js_uses_regular_post_chunks():
     assert "stream_count: HTTP_STREAM_COUNT" in script
     assert "data-sustained-stream" not in script
     assert "selectedStreams" not in script
+
+
+def test_probe_network_js_uses_audience_friendly_summary():
+    script = Path("static/network_probe.js").read_text(encoding="utf-8")
+
+    assert "formatDirectionDifference" in script
+    assert "formatRetransmission" in script
+    assert "전체 송신량의" in script
+    assert "운영체제에서 제공하지 않음" in script
+    assert "측정 PC → 서버" in script
+    assert "서버 → 측정 PC" in script
+    assert "data-probe-cwnd" not in script
 
 
 def test_sustained_progress_uses_its_own_time_based_style():

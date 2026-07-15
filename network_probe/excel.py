@@ -28,6 +28,8 @@ _THIN_BORDER = Border(
 )
 _DIRECTION_LABELS = {"upload": "업로드", "download": "다운로드", "full": "전체"}
 _STATUS_LABELS = {"completed": "완료", "failed": "실패", "cancelled": "취소"}
+_NOT_MEASURED = "측정 안 함"
+_TELEMETRY_UNAVAILABLE = "운영체제에서 제공하지 않음"
 
 
 class ProbeExcelError(RuntimeError):
@@ -96,13 +98,49 @@ def _phase_endpoints(direction: str) -> tuple[str, str]:
     return "서버", "클라이언트"
 
 
+def _phase_path(direction: str) -> str:
+    return "측정 PC → 서버" if direction == "upload" else "서버 → 측정 PC"
+
+
 def _telemetry_value(telemetry: dict[str, Any], key: str, *, milliseconds: bool = False) -> Any:
     if not telemetry.get("available"):
-        return "값 없음"
+        return _TELEMETRY_UNAVAILABLE
     value = _as_number(telemetry.get(key))
     if value is None:
-        return "값 없음"
+        return _TELEMETRY_UNAVAILABLE
     return value / 1000 if milliseconds else int(value)
+
+
+def _format_bytes_for_summary(value: Any) -> str:
+    byte_count = _as_number(value)
+    if byte_count is None or byte_count < 0:
+        return _TELEMETRY_UNAVAILABLE
+    if byte_count >= 1024 * 1024:
+        return f"{byte_count / 1024 / 1024:.1f} MB"
+    if byte_count >= 1024:
+        return f"{byte_count / 1024:.1f} KB"
+    return f"{byte_count:.0f} B"
+
+
+def _retransmission_rate(sender: dict[str, Any], telemetry: dict[str, Any]) -> float | str:
+    if not telemetry.get("available"):
+        return _TELEMETRY_UNAVAILABLE
+    retransmitted = _as_number(telemetry.get("bytes_retrans"))
+    sent = _as_number(sender.get("bytes"))
+    if retransmitted is None:
+        return _TELEMETRY_UNAVAILABLE
+    if sent is None or sent <= 0:
+        return "계산 불가"
+    return retransmitted / sent * 100
+
+
+def _direction_difference(phases: dict[str, Any]) -> float | None:
+    upload = _as_number(_as_mapping(_as_mapping(phases.get("upload")).get("receiver")).get("average_mbps"))
+    download = _as_number(_as_mapping(_as_mapping(phases.get("download")).get("receiver")).get("average_mbps"))
+    if upload is None or download is None:
+        return None
+    maximum = max(upload, download)
+    return abs(upload - download) / maximum * 100 if maximum > 0 else None
 
 
 def build_probe_excel_filename(result: dict[str, Any]) -> str:
@@ -118,111 +156,112 @@ def _build_summary_sheet(workbook: Workbook, result: dict[str, Any]) -> None:
     sheet = workbook.active
     sheet.title = "측정 요약"
     sheet.sheet_view.showGridLines = False
-    _style_title(sheet, "TCP 정밀 측정 결과", 14)
+    _style_title(sheet, "TCP 전송 성능 측정 결과", 11)
 
     requested = _as_mapping(result.get("requested"))
     agent = _as_mapping(result.get("agent"))
     phases = _as_mapping(result.get("phases"))
     status = safe_excel_text(result.get("status", ""))
 
-    _style_section(sheet, 3, "측정 정보", 14)
+    _style_section(sheet, 3, "측정 정보", 11)
     _set_label_value(sheet, 4, 1, "측정 상태", safe_excel_text(_STATUS_LABELS.get(status, status)))
     sheet["B4"].fill = _STATUS_FILLS.get(status, PatternFill(fill_type=None))
     _set_label_value(sheet, 4, 3, "세션 ID", safe_excel_text(result.get("session_id", "")))
-    sheet.merge_cells("D4:H4")
-    _set_label_value(sheet, 4, 9, "측정 방향", safe_excel_text(_DIRECTION_LABELS.get(str(requested.get("direction", "")), requested.get("direction", ""))))
-    _set_label_value(sheet, 4, 11, "TCP 스트림", _as_integer(requested.get("stream_count")))
+    sheet.merge_cells("D4:F4")
+    _set_label_value(sheet, 4, 7, "측정 방향", safe_excel_text(_DIRECTION_LABELS.get(str(requested.get("direction", "")), requested.get("direction", ""))))
+    _set_label_value(sheet, 4, 9, "TCP 스트림", _as_integer(requested.get("stream_count")))
 
     _set_label_value(sheet, 5, 1, "오류 내용", safe_excel_text(result.get("error", "")))
-    sheet.merge_cells("B5:N5")
+    sheet.merge_cells("B5:K5")
     sheet.row_dimensions[5].height = 34
 
     _set_label_value(sheet, 6, 1, "시작 시각", safe_excel_text(result.get("started_at", "")))
-    _set_label_value(sheet, 6, 3, "완료 시각", safe_excel_text(result.get("completed_at", "")))
-    _set_label_value(sheet, 6, 5, "본 측정(초)", _as_number(requested.get("duration_seconds")))
-    _set_label_value(sheet, 6, 7, "워밍업(초)", _as_number(requested.get("warmup_seconds")))
-    _set_label_value(sheet, 7, 1, "클라이언트 이름", safe_excel_text(agent.get("hostname", "")))
-    _set_label_value(sheet, 7, 3, "클라이언트 IP", safe_excel_text(agent.get("client_ip", "")))
-    _set_label_value(sheet, 7, 5, "에이전트 ID", safe_excel_text(agent.get("agent_id", "")))
-    sheet.merge_cells("F7:J7")
-    _set_label_value(sheet, 7, 11, "서버 주소", safe_excel_text(result.get("server_host", "")))
+    sheet.merge_cells("B6:C6")
+    _set_label_value(sheet, 6, 4, "완료 시각", safe_excel_text(result.get("completed_at", "")))
+    sheet.merge_cells("E6:F6")
+    _set_label_value(sheet, 6, 7, "본 측정(초)", _as_number(requested.get("duration_seconds")))
+    _set_label_value(sheet, 6, 9, "워밍업(초)", _as_number(requested.get("warmup_seconds")))
+    _set_label_value(sheet, 7, 1, "측정 PC", safe_excel_text(agent.get("hostname", "")))
+    sheet.merge_cells("B7:C7")
+    _set_label_value(sheet, 7, 4, "측정 PC IP", safe_excel_text(agent.get("client_ip", "")))
+    sheet.merge_cells("E7:F7")
+    _set_label_value(sheet, 7, 7, "서버 주소", safe_excel_text(result.get("server_host", "")))
+    sheet.merge_cells("H7:K7")
 
-    _style_section(sheet, 9, "방향별 전송 성능", 14)
+    _style_section(sheet, 9, "핵심 결과", 11)
     headers = (
-        "방향", "송신 측", "수신 측", "송신(Byte)", "수신(Byte)", "송신(MiB)", "수신(MiB)",
-        "송신 시간(초)", "수신 시간(초)", "송신 평균(Mbps)", "수신 평균(Mbps)",
-        "수신 중앙값(Mbps)", "수신 최소(Mbps)", "수신 최대(Mbps)",
+        "방향", "측정 경로", "실제 수신 평균(Mbps)", "파일 전송량(MB/s)",
+        "중앙값(Mbps)", "최소(Mbps)", "최대(Mbps)", "RTT(ms)", "최소 RTT(ms)",
+        "TCP 재전송량", "재전송률(%)",
     )
     for column, header in enumerate(headers, start=1):
         sheet.cell(10, column, safe_excel_text(header))
-    _style_header(sheet, 10, 14)
+    _style_header(sheet, 10, 11)
 
     row = 11
     for direction in ("upload", "download"):
         if direction not in phases:
+            values = (_DIRECTION_LABELS[direction], _phase_path(direction)) + (_NOT_MEASURED,) * 9
+            for column, value in enumerate(values, start=1):
+                cell = sheet.cell(row, column, value)
+                cell.border = _THIN_BORDER
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+            row += 1
             continue
         phase = _as_mapping(phases.get(direction))
         sender = _as_mapping(phase.get("sender"))
         receiver = _as_mapping(phase.get("receiver"))
-        sender_bytes = _as_integer(sender.get("bytes"))
-        receiver_bytes = _as_integer(receiver.get("bytes"))
-        sender_endpoint, receiver_endpoint = _phase_endpoints(direction)
+        telemetry = _as_mapping(sender.get("telemetry"))
+        average_mbps = _as_number(receiver.get("average_mbps"))
         values = (
-            _DIRECTION_LABELS[direction], sender_endpoint, receiver_endpoint, sender_bytes, receiver_bytes,
-            sender_bytes / (1024 * 1024) if sender_bytes is not None else None,
-            receiver_bytes / (1024 * 1024) if receiver_bytes is not None else None,
-            _as_number(sender.get("duration_seconds")), _as_number(receiver.get("duration_seconds")),
-            _as_number(sender.get("average_mbps")), _as_number(receiver.get("average_mbps")),
+            _DIRECTION_LABELS[direction], _phase_path(direction), average_mbps,
+            average_mbps / 8 if average_mbps is not None else None,
             _as_number(receiver.get("median_mbps")), _as_number(receiver.get("min_mbps")),
             _as_number(receiver.get("max_mbps")),
+            _telemetry_value(telemetry, "rtt_us", milliseconds=True),
+            _telemetry_value(telemetry, "min_rtt_us", milliseconds=True),
+            _format_bytes_for_summary(telemetry.get("bytes_retrans")) if telemetry.get("available") else _TELEMETRY_UNAVAILABLE,
+            _retransmission_rate(sender, telemetry),
         )
         for column, value in enumerate(values, start=1):
             cell = sheet.cell(row, column, value)
             cell.border = _THIN_BORDER
             cell.alignment = Alignment(vertical="center", wrap_text=True)
-        for column in (4, 5):
-            sheet.cell(row, column).number_format = "#,##0"
-        for column in range(6, 15):
+        for column in range(3, 8):
+            sheet.cell(row, column).number_format = "#,##0.0"
+        for column in (8, 9):
             sheet.cell(row, column).number_format = "#,##0.00"
+        sheet.cell(row, 11).number_format = "0.000"
         row += 1
 
-    telemetry_row = row + 1
-    _style_section(sheet, telemetry_row, "TCP 송신 상세 통계", 14)
-    telemetry_headers = (
-        "방향", "RTT(ms)", "최소 RTT(ms)", "혼잡 윈도우(Byte)", "재전송(Byte)",
-        "빠른 재전송", "중복 ACK", "타임아웃", "비고",
+    comparison_row = row + 1
+    _style_section(sheet, comparison_row, "업로드·다운로드 비교", 11)
+    difference = _direction_difference(phases)
+    _set_label_value(
+        sheet,
+        comparison_row + 1,
+        1,
+        "실제 수신 평균 속도 차이",
+        difference if difference is not None else _NOT_MEASURED,
     )
-    for column, header in enumerate(telemetry_headers, start=1):
-        sheet.cell(telemetry_row + 1, column, safe_excel_text(header))
-    _style_header(sheet, telemetry_row + 1, len(telemetry_headers))
-    detail_row = telemetry_row + 2
-    for direction in ("upload", "download"):
-        if direction not in phases:
-            continue
-        telemetry = _as_mapping(_as_mapping(_as_mapping(phases.get(direction)).get("sender")).get("telemetry"))
-        available = bool(telemetry.get("available"))
-        values = (
-            _DIRECTION_LABELS[direction],
-            _telemetry_value(telemetry, "rtt_us", milliseconds=True),
-            _telemetry_value(telemetry, "min_rtt_us", milliseconds=True),
-            _telemetry_value(telemetry, "cwnd_bytes"),
-            _telemetry_value(telemetry, "bytes_retrans"),
-            _telemetry_value(telemetry, "fast_retransmits"),
-            _telemetry_value(telemetry, "duplicate_acks"),
-            _telemetry_value(telemetry, "timeout_episodes"),
-            "" if available else safe_excel_text(telemetry.get("error", "TCP 상세 통계를 사용할 수 없습니다.")),
-        )
-        for column, value in enumerate(values, start=1):
-            cell = sheet.cell(detail_row, column, value)
-            cell.border = _THIN_BORDER
-            cell.alignment = Alignment(vertical="center", wrap_text=True)
-        for column in (2, 3):
-            sheet.cell(detail_row, column).number_format = "#,##0.000"
-        for column in range(4, 9):
-            sheet.cell(detail_row, column).number_format = "#,##0"
-        detail_row += 1
+    sheet.cell(comparison_row + 1, 2).number_format = "0.000\"%\""
+    sheet.merge_cells(start_row=comparison_row + 1, start_column=2, end_row=comparison_row + 1, end_column=4)
+    sheet.cell(comparison_row + 1, 5, "양방향 속도 중 큰 값을 기준으로 계산하며 정상·비정상 판정값이 아닙니다.")
+    sheet.merge_cells(start_row=comparison_row + 1, start_column=5, end_row=comparison_row + 1, end_column=11)
+    sheet.cell(comparison_row + 1, 5).alignment = Alignment(wrap_text=True, vertical="top")
 
-    widths = (12, 15, 15, 18, 18, 16, 16, 16, 16, 18, 18, 19, 17, 17)
+    guidance_row = comparison_row + 3
+    _style_section(sheet, guidance_row, "결과 해석 참고", 11)
+    guidance = (
+        "실제 수신 평균 속도를 우선 확인하세요. 기준 속도가 설정되지 않아 정상·비정상을 자동 판정하지 않습니다. "
+        "측정값에는 측정 PC와 서버의 CPU·NIC 성능, 무선 환경과 네트워크 경로 상태가 함께 반영됩니다."
+    )
+    sheet.cell(guidance_row + 1, 1, guidance)
+    sheet.merge_cells(start_row=guidance_row + 1, start_column=1, end_row=guidance_row + 2, end_column=11)
+    sheet.cell(guidance_row + 1, 1).alignment = Alignment(wrap_text=True, vertical="top")
+    sheet.row_dimensions[guidance_row + 1].height = 34
+
+    widths = (11, 20, 20, 19, 17, 15, 15, 13, 15, 18, 16)
     for column, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(column)].width = width
     sheet.freeze_panes = "A11"
@@ -249,7 +288,10 @@ def _build_interval_sheet(workbook: Workbook, result: dict[str, Any]) -> None:
     sheet = workbook.create_sheet("구간별 속도")
     sheet.sheet_view.showGridLines = False
     _style_title(sheet, "1초 구간별 TCP 처리량", 6)
-    headers = ("방향", "구간(초)", "송신(Byte)", "송신(Mbps)", "수신(Byte)", "수신(Mbps)")
+    headers = (
+        "방향", "구간(초)", "송신 측 기록(Byte)", "송신 측 기록(Mbps)",
+        "수신 측 실제(Byte)", "수신 측 실제(Mbps)",
+    )
     for column, header in enumerate(headers, start=1):
         sheet.cell(3, column, safe_excel_text(header))
     _style_header(sheet, 3, 6)
@@ -293,7 +335,7 @@ def _build_interval_sheet(workbook: Workbook, result: dict[str, Any]) -> None:
             continue
         start_row, end_row = chart_ranges[direction]
         chart = LineChart()
-        chart.title = f"{_DIRECTION_LABELS[direction]} 송신·수신 처리량"
+        chart.title = f"{_DIRECTION_LABELS[direction]} 송신 측 기록·수신 측 실제 속도"
         chart.y_axis.title = "Mbps"
         chart.x_axis.title = "구간(초)"
         chart.height = 8
@@ -318,10 +360,11 @@ def _build_stream_sheet(workbook: Workbook, result: dict[str, Any]) -> None:
     sheet.sheet_view.showGridLines = False
     headers = (
         "방향", "역할", "측정 지점", "스트림 ID", "전송량(Byte)", "전송량(MiB)", "시간(초)",
-        "평균(Mbps)", "TCP 통계", "RTT(ms)", "최소 RTT(ms)", "혼잡 윈도우(Byte)",
-        "재전송(Byte)", "빠른 재전송", "중복 ACK", "타임아웃", "비고",
+        "평균 속도(Mbps)", "TCP 상세 통계", "왕복 지연 RTT(ms)", "최소 왕복 지연(ms)",
+        "송신 혼잡 윈도우(Byte)", "TCP 재전송(Byte)", "빠른 재전송(회)",
+        "중복 ACK(회)", "타임아웃(회)", "비고",
     )
-    _style_title(sheet, "TCP 스트림 상세", len(headers))
+    _style_title(sheet, "TCP 전송 성능 스트림 상세", len(headers))
     for column, header in enumerate(headers, start=1):
         sheet.cell(3, column, safe_excel_text(header))
     _style_header(sheet, 3, len(headers))
@@ -342,11 +385,11 @@ def _build_stream_sheet(workbook: Workbook, result: dict[str, Any]) -> None:
                 available = bool(telemetry.get("available"))
                 byte_count = _as_integer(stream.get("bytes"))
                 values = (
-                    _DIRECTION_LABELS[direction], "송신" if role == "sender" else "수신", endpoint,
+                    _DIRECTION_LABELS[direction], "송신 측" if role == "sender" else "수신 측", endpoint,
                     _as_integer(stream.get("stream_id")), byte_count,
                     byte_count / (1024 * 1024) if byte_count is not None else None,
                     _as_number(stream.get("duration_seconds")), _as_number(stream.get("mbps")),
-                    "제공" if available else "값 없음",
+                    "제공" if available else _TELEMETRY_UNAVAILABLE,
                     _telemetry_value(telemetry, "rtt_us", milliseconds=True),
                     _telemetry_value(telemetry, "min_rtt_us", milliseconds=True),
                     _telemetry_value(telemetry, "cwnd_bytes"), _telemetry_value(telemetry, "bytes_retrans"),
@@ -382,7 +425,7 @@ def build_probe_excel(result: dict[str, Any]) -> bytes:
     try:
         workbook = Workbook()
         workbook.properties.creator = "InternalUpload"
-        workbook.properties.title = "TCP 정밀 측정 결과"
+        workbook.properties.title = "TCP 전송 성능 측정 결과"
         _build_summary_sheet(workbook, result)
         _build_interval_sheet(workbook, result)
         _build_stream_sheet(workbook, result)

@@ -533,6 +533,11 @@ select:disabled {
   line-height: 1.55;
 }
 
+.probe-comparison {
+  padding: 10px 0;
+  font-weight: 700;
+}
+
 .section-title {
   display: flex;
   align-items: center;

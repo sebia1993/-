@@ -178,7 +178,7 @@
 
           <div class="measurement-tabs" role="tablist" aria-label="네트워크 측정 방식">
             <button type="button" class="measurement-tab is-active" data-measurement-mode="http" aria-selected="true">HTTP 전송 측정</button>
-            <button type="button" class="measurement-tab" data-measurement-mode="probe" aria-selected="false">TCP 정밀 측정</button>
+            <button type="button" class="measurement-tab" data-measurement-mode="probe" aria-selected="false">TCP 전송 성능 측정</button>
           </div>
 
           <div data-measurement-control="http">
@@ -370,7 +370,7 @@
 
           <div data-measurement-result="probe" hidden>
             <div class="section-title">
-              <h2>TCP 정밀 측정 결과</h2>
+              <h2>TCP 전송 성능 측정 결과</h2>
               <span data-probe-status>대기</span>
             </div>
 
@@ -381,12 +381,12 @@
             <div class="sustained-phase" data-probe-phase>클라이언트 연결 대기</div>
 
             <dl class="metric-grid sustained-metrics">
-              <div><dt>수신 처리량</dt><dd data-probe-receiver>-</dd></div>
-              <div><dt>송신 처리량</dt><dd data-probe-sender>-</dd></div>
-              <div><dt>RTT / 최소 RTT</dt><dd data-probe-rtt>-</dd></div>
-              <div><dt>혼잡 윈도우</dt><dd data-probe-cwnd>-</dd></div>
-              <div><dt>재전송 바이트</dt><dd data-probe-retrans>-</dd></div>
-              <div><dt>클라이언트</dt><dd data-probe-client>-</dd></div>
+              <div><dt>업로드 실제 수신 속도</dt><dd data-probe-upload>측정 안 함</dd></div>
+              <div><dt>다운로드 실제 수신 속도</dt><dd data-probe-download>측정 안 함</dd></div>
+              <div><dt>왕복 지연시간(RTT)</dt><dd data-probe-rtt>-</dd></div>
+              <div><dt>TCP 재전송</dt><dd data-probe-retrans>-</dd></div>
+              <div><dt>측정 조건</dt><dd data-probe-conditions>-</dd></div>
+              <div><dt>측정 PC</dt><dd data-probe-client>-</dd></div>
             </dl>
 
             <div class="throughput-chart">
@@ -397,7 +397,10 @@
               </div>
             </div>
 
-            <div class="result-list" data-probe-result-list></div>
+            <div class="result-list transfer-result-list" data-probe-result-list></div>
+            <p class="measurement-explanation">
+              실제 수신 속도는 반대편에서 받은 데이터 기준입니다. 기준 속도가 설정되지 않아 정상·비정상은 자동 판정하지 않습니다.
+            </p>
             <div class="actions sustained-result-actions">
               <a class="secondary" data-probe-excel hidden>Excel 결과 받기</a>
             </div>

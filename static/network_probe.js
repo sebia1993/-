@@ -1,19 +1,60 @@
 (function () {
   const COLORS = { upload: "#246b54", download: "#c15f2e" };
+  const NOT_MEASURED = "측정 안 함";
+  const TELEMETRY_UNAVAILABLE = "운영체제에서 제공하지 않음";
 
   function formatSpeed(value) {
     const number = Number(value);
     if (!Number.isFinite(number) || number < 0) return "-";
-    const digits = number >= 100 ? 1 : 2;
-    return `${number.toFixed(digits)} Mbps / ${(number / 8).toFixed(digits)} MB/s`;
+    return `${number.toFixed(1)} Mbps / ${(number / 8).toFixed(1)} MB/s`;
   }
 
   function formatBytes(value) {
     const number = Number(value);
     if (!Number.isFinite(number) || number < 0) return "-";
-    if (number >= 1024 * 1024) return `${(number / 1024 / 1024).toFixed(2)} MB`;
+    if (number >= 1024 * 1024) return `${(number / 1024 / 1024).toFixed(1)} MB`;
     if (number >= 1024) return `${(number / 1024).toFixed(1)} KB`;
     return `${number.toFixed(0)} B`;
+  }
+
+  function directionLabel(direction) {
+    return direction === "upload" ? "업로드" : "다운로드";
+  }
+
+  function directionPath(direction) {
+    return direction === "upload" ? "측정 PC → 서버" : "서버 → 측정 PC";
+  }
+
+  function formatRtt(telemetry) {
+    if (!telemetry || !telemetry.available) return TELEMETRY_UNAVAILABLE;
+    const rtt = Number(telemetry.rtt_us) / 1000;
+    const minimum = Number(telemetry.min_rtt_us) / 1000;
+    if (!Number.isFinite(rtt) || !Number.isFinite(minimum)) return TELEMETRY_UNAVAILABLE;
+    return `${rtt.toFixed(2)} ms (최소 ${minimum.toFixed(2)} ms)`;
+  }
+
+  function formatRetransmission(sender, telemetry) {
+    if (!telemetry || !telemetry.available) return TELEMETRY_UNAVAILABLE;
+    const retransmittedBytes = Number(telemetry.bytes_retrans);
+    const sentBytes = Number(sender && sender.bytes);
+    if (!Number.isFinite(retransmittedBytes) || retransmittedBytes < 0) return TELEMETRY_UNAVAILABLE;
+    if (!Number.isFinite(sentBytes) || sentBytes <= 0) return formatBytes(retransmittedBytes);
+    return `${formatBytes(retransmittedBytes)} (전체 송신량의 ${(retransmittedBytes / sentBytes * 100).toFixed(3)}%)`;
+  }
+
+  function formatDirectionValues(results, formatter) {
+    return ["upload", "download"]
+      .filter((direction) => results[direction])
+      .map((direction) => `${directionLabel(direction)} ${formatter(results[direction])}`)
+      .join(" · ") || NOT_MEASURED;
+  }
+
+  function formatDirectionDifference(results) {
+    const upload = Number(results.upload && results.upload.receiver && results.upload.receiver.average_mbps);
+    const download = Number(results.download && results.download.receiver && results.download.receiver.average_mbps);
+    const maximum = Math.max(upload, download);
+    if (!Number.isFinite(upload) || !Number.isFinite(download) || maximum <= 0) return "";
+    return `업로드·다운로드 실제 수신 속도 차이: ${(Math.abs(upload - download) / maximum * 100).toFixed(3)}%`;
   }
 
   async function fetchJson(url, options, label) {
@@ -44,11 +85,11 @@
     const statusText = root.querySelector("[data-probe-status]");
     const phaseText = root.querySelector("[data-probe-phase]");
     const progressBar = root.querySelector("[data-probe-progress-bar]");
-    const receiverText = root.querySelector("[data-probe-receiver]");
-    const senderText = root.querySelector("[data-probe-sender]");
+    const uploadText = root.querySelector("[data-probe-upload]");
+    const downloadText = root.querySelector("[data-probe-download]");
     const rttText = root.querySelector("[data-probe-rtt]");
-    const cwndText = root.querySelector("[data-probe-cwnd]");
     const retransText = root.querySelector("[data-probe-retrans]");
+    const conditionsText = root.querySelector("[data-probe-conditions]");
     const clientText = root.querySelector("[data-probe-client]");
     const resultList = root.querySelector("[data-probe-result-list]");
     const excelLink = root.querySelector("[data-probe-excel]");
@@ -76,13 +117,13 @@
 
     function resetResult() {
       statusText.textContent = "준비";
-      phaseText.textContent = "TCP 측정 시작 대기";
+      phaseText.textContent = "TCP 전송 성능 측정 시작 대기";
       progressBar.style.width = "0%";
-      receiverText.textContent = "-";
-      senderText.textContent = "-";
+      uploadText.textContent = NOT_MEASURED;
+      downloadText.textContent = NOT_MEASURED;
       rttText.textContent = "-";
-      cwndText.textContent = "-";
       retransText.textContent = "-";
+      conditionsText.textContent = "-";
       clientText.textContent = "-";
       resultList.innerHTML = "";
       excelLink.hidden = true;
@@ -96,7 +137,7 @@
       serviceStatus.classList.toggle("warning", !serviceAvailable);
       serviceStatus.classList.toggle("success", serviceAvailable);
       if (!payload.enabled) {
-        serviceStatus.textContent = "TCP 정밀 측정 비활성 · config.ini의 [network_probe] ENABLED=true 필요";
+        serviceStatus.textContent = "TCP 전송 성능 측정 비활성 · config.ini의 [network_probe] ENABLED=true 필요";
       } else if (!payload.available) {
         serviceStatus.textContent = payload.error || "TCP 측정 서버를 사용할 수 없습니다.";
       } else {
@@ -162,9 +203,9 @@
         warmup: `${phase} 3초 워밍업`,
         running: `${phase} 본 측정`,
         awaiting_result: `${phase} 결과 집계`,
-        completed: "TCP 측정 완료",
-        cancelled: "TCP 측정 취소",
-        failed: "TCP 측정 실패",
+        completed: "TCP 전송 성능 측정 완료",
+        cancelled: "TCP 전송 성능 측정 취소",
+        failed: "TCP 전송 성능 측정 실패",
       })[payload.status] || payload.status;
     }
 
@@ -173,19 +214,32 @@
       const sender = combined.sender;
       const receiver = combined.receiver;
       const telemetry = sender.telemetry || {};
-      receiverText.textContent = formatSpeed(receiver.average_mbps);
-      senderText.textContent = formatSpeed(sender.average_mbps);
-      rttText.textContent = telemetry.available
-        ? `${(Number(telemetry.rtt_us) / 1000).toFixed(3)} / ${(Number(telemetry.min_rtt_us) / 1000).toFixed(3)} ms`
-        : "값 없음";
-      cwndText.textContent = telemetry.available ? formatBytes(telemetry.cwnd_bytes) : "값 없음";
-      retransText.textContent = telemetry.available ? formatBytes(telemetry.bytes_retrans) : "값 없음";
+      const directionSpeedText = direction === "upload" ? uploadText : downloadText;
+      directionSpeedText.textContent = formatSpeed(receiver.average_mbps);
       graphSeries[direction] = Array.isArray(receiver.intervals)
         ? receiver.intervals.map((item) => Number(item.mbps) || 0)
         : [];
       const item = document.createElement("div");
-      item.className = "result-item";
-      item.textContent = `${direction === "upload" ? "업로드" : "다운로드"}: 수신 ${formatSpeed(receiver.average_mbps)} · 송신 ${formatSpeed(sender.average_mbps)}`;
+      item.className = "transfer-result";
+      const title = document.createElement("h3");
+      title.textContent = `${directionLabel(direction)} · ${directionPath(direction)}`;
+      const details = document.createElement("dl");
+      details.className = "transfer-result-details";
+      [
+        ["실제 수신 평균", formatSpeed(receiver.average_mbps)],
+        ["1초 중앙값", formatSpeed(receiver.median_mbps)],
+        ["1초 최소 속도", formatSpeed(receiver.min_mbps)],
+        ["1초 최대 속도", formatSpeed(receiver.max_mbps)],
+      ].forEach(([label, value]) => {
+        const row = document.createElement("div");
+        const term = document.createElement("dt");
+        const description = document.createElement("dd");
+        term.textContent = label;
+        description.textContent = value;
+        row.append(term, description);
+        details.appendChild(row);
+      });
+      item.append(title, details);
       resultList.appendChild(item);
     }
 
@@ -194,9 +248,30 @@
       phaseText.textContent = stateLabel(payload);
       progressBar.style.width = `${Number(payload.progress_percent || 0).toFixed(1)}%`;
       if (payload.agent) clientText.textContent = `${payload.agent.hostname} · ${payload.agent.client_ip}`;
+      if (payload.requested) {
+        conditionsText.textContent = `${Number(payload.requested.duration_seconds)}초 · TCP ${Number(payload.requested.stream_count)}개 스트림`;
+      }
       resultList.innerHTML = "";
       graphSeries = { upload: [], download: [] };
-      Object.entries(payload.results || {}).forEach(([direction, result]) => renderPhaseResult(direction, result));
+      const results = payload.results || {};
+      uploadText.textContent = NOT_MEASURED;
+      downloadText.textContent = NOT_MEASURED;
+      Object.entries(results).forEach(([direction, result]) => renderPhaseResult(direction, result));
+      rttText.textContent = formatDirectionValues(
+        results,
+        (combined) => formatRtt((combined.sender || {}).telemetry)
+      );
+      retransText.textContent = formatDirectionValues(
+        results,
+        (combined) => formatRetransmission(combined.sender || {}, (combined.sender || {}).telemetry)
+      );
+      const difference = formatDirectionDifference(results);
+      if (difference) {
+        const comparison = document.createElement("p");
+        comparison.className = "measurement-explanation probe-comparison";
+        comparison.textContent = difference;
+        resultList.appendChild(comparison);
+      }
       drawChart();
       if (payload.error) phaseText.textContent = payload.error;
       if (payload.excel_url) {
