@@ -9,6 +9,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zipfile import ZIP_STORED, ZipFile
 
+from app_version import APP_VERSION
+
 
 HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 NUMERIC_ADDRESS_RE = re.compile(r"^[0-9.]+$")
@@ -128,7 +130,7 @@ def _client_command(server_url: str) -> bytes:
             "@echo off",
             "chcp 65001 >nul",
             'cd /d "%~dp0"',
-            "echo TCP 정밀 측정 클라이언트를 시작합니다.",
+            f"echo TCP 전송 성능 측정 클라이언트 {APP_VERSION}를 시작합니다.",
             f"echo 서버: {server_url}",
             "echo 이 창을 닫지 마세요. 종료하려면 Ctrl+C를 누르세요.",
             "echo.",
@@ -147,13 +149,14 @@ def _client_command(server_url: str) -> bytes:
 def _client_readme(server_url: str) -> bytes:
     text = "\r\n".join(
         [
-            "사내 업로드 TCP 정밀 측정 Windows 클라이언트",
+            "사내 업로드 TCP 전송 성능 측정 Windows 클라이언트",
             "",
+            f"클라이언트 버전: {APP_VERSION}",
             f"자동 설정된 서버 주소: {server_url}",
             "",
             "1. ZIP 파일을 원하는 폴더에 완전히 압축 해제합니다.",
             "2. start_tcp_probe_client.cmd를 더블클릭합니다.",
-            "3. 콘솔 창을 열어 둔 상태에서 서버 웹 화면의 TCP 정밀 측정을 실행합니다.",
+            "3. 콘솔 창을 열어 둔 상태에서 서버 웹 화면의 TCP 전송 성능 측정을 실행합니다.",
             "4. 종료할 때는 콘솔 창에서 Ctrl+C를 누릅니다.",
             "",
             "별도 주소 입력이나 config.ini 설정은 필요하지 않습니다.",

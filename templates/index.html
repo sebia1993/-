@@ -229,7 +229,7 @@
               </div>
 
               <div class="notice warning compact-notice">
-                이 기능은 HTTP 연결 1개로 브라우저의 시간당 전송 성능을 측정합니다. TCP·UDP 정밀 측정이나 iperf 결과와는 다릅니다.
+                이 기능은 HTTP 연결 1개로 브라우저의 시간 기준 전송 성능을 측정합니다. TCP 전송 성능 측정이나 UDP 손실·지터 측정, iperf 결과와는 다릅니다.
               </div>
             </div>
           </div>
@@ -242,6 +242,7 @@
             <div class="probe-client-package">
               <a class="primary" data-probe-client-package aria-disabled="true">Windows 클라이언트 ZIP 받기</a>
               <p data-probe-client-package-address>자동 연결 주소 확인 중</p>
+              <p class="muted">서버 업데이트 후 기존 클라이언트가 목록에 보이지 않으면 최신 ZIP을 다시 받으세요.</p>
               <p class="muted">압축 해제 후 CMD만 실행하세요. TCP 포트는 자동 전달되며, 서버 IP 또는 웹 포트가 바뀔 때만 ZIP을 다시 받으면 됩니다.</p>
             </div>
 
@@ -251,6 +252,10 @@
                 <option value="">연결된 Windows 클라이언트 없음</option>
               </select>
             </label>
+
+            <div class="probe-client-readiness notice warning" data-probe-client-readiness>
+              연결할 Windows 클라이언트를 기다리는 중입니다.
+            </div>
 
             <label>
               <span>본 측정 시간</span>

@@ -13,10 +13,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from app_version import APP_VERSION
 from network_measurement import NetworkMeasurementGate
 from result_storage import write_json_atomically
 
 from .models import (
+    PROBE_CONNECTIVITY_INTERVAL_SECONDS,
+    PROBE_CONNECTIVITY_STALE_SECONDS,
     PROBE_DIRECTIONS,
     PROBE_DURATIONS,
     PROBE_PROTOCOL_VERSION,
@@ -61,6 +64,14 @@ PROBE_LOG_FIELDS = [
 ]
 TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 RESULT_SUBMISSION_TIMEOUT_SECONDS = 15.0
+CONNECTIVITY_FAILURE_MESSAGES = {
+    "connect_timeout": "TCP 측정 포트 연결 시간이 초과되었습니다.",
+    "connection_refused": "TCP 측정 포트에서 연결을 거부했습니다.",
+    "name_resolution_failed": "서버 PC 이름을 IP 주소로 확인하지 못했습니다.",
+    "network_unreachable": "서버 TCP 측정 포트까지 네트워크 경로가 없습니다.",
+    "protocol_error": "TCP 연결 점검 응답을 확인하지 못했습니다.",
+    "connection_error": "TCP 측정 포트에 연결하지 못했습니다.",
+}
 
 
 class ProbeServiceError(RuntimeError):
@@ -165,6 +176,8 @@ class ProbeService:
                 "enabled": self.config.enabled,
                 "available": bool(self.config.enabled and self.started and not self.start_error),
                 "port": self.config.port,
+                "server_version": APP_VERSION,
+                "protocol_version": PROBE_PROTOCOL_VERSION,
                 "error": self.start_error,
                 "active_session_id": next(
                     (session.session_id for session in self.sessions.values() if session.status not in TERMINAL_STATUSES),
@@ -174,9 +187,9 @@ class ProbeService:
 
     def register_agent(self, payload: dict[str, Any], client_ip: str) -> dict[str, Any]:
         if not self.config.enabled:
-            raise ProbeServiceError("TCP 정밀 측정이 비활성화되어 있습니다.", 503)
+            raise ProbeServiceError("TCP 전송 성능 측정이 비활성화되어 있습니다.", 503)
         if not self.started or self.start_error:
-            raise ProbeServiceError(self.start_error or "TCP 정밀 측정 서버를 사용할 수 없습니다.", 503)
+            raise ProbeServiceError(self.start_error or "TCP 전송 성능 측정 서버를 사용할 수 없습니다.", 503)
         agent_id = str(payload.get("agent_id", "")).strip().lower()
         hostname = self._clean_hostname(payload.get("hostname"))
         server_host = str(payload.get("server_host", "")).strip()[:255]
@@ -187,7 +200,12 @@ class ProbeService:
         if len(agent_id) != 32 or any(character not in "0123456789abcdef" for character in agent_id):
             raise ProbeServiceError("에이전트 ID 형식이 올바르지 않습니다.")
         if protocol_version != PROBE_PROTOCOL_VERSION:
-            raise ProbeServiceError("서버와 클라이언트의 TCP 측정 프로토콜 버전이 다릅니다.", 409)
+            raise ProbeServiceError(
+                "서버와 클라이언트의 TCP 측정 프로토콜 버전이 다릅니다. "
+                "서버 웹 화면에서 최신 Windows 클라이언트 ZIP을 다시 받으세요.",
+                409,
+            )
+        client_version = self._clean_client_version(payload.get("client_version"))
         if not server_host:
             raise ProbeServiceError("서버 주소가 비어 있습니다.")
 
@@ -204,6 +222,7 @@ class ProbeService:
                 client_ip=client_ip,
                 server_host=server_host,
                 protocol_version=protocol_version,
+                client_version=client_version,
                 registered_at=now,
                 last_seen_at=now,
             )
@@ -216,22 +235,51 @@ class ProbeService:
             "long_poll_seconds": self.config.long_poll_seconds,
             "agent_ttl_seconds": self.config.agent_ttl_seconds,
             "probe_port": self.config.port,
+            "server_version": APP_VERSION,
+            "protocol_version": PROBE_PROTOCOL_VERSION,
+            "connectivity_interval_seconds": PROBE_CONNECTIVITY_INTERVAL_SECONDS,
+            "connectivity_stale_seconds": PROBE_CONNECTIVITY_STALE_SECONDS,
         }
 
     def list_agents(self) -> list[dict[str, Any]]:
         with self.lock:
             self._cleanup_expired_agents_locked()
             now = self.clock()
-            return [
-                {
-                    "agent_id": agent.agent_id,
-                    "hostname": agent.hostname,
-                    "client_ip": agent.client_ip,
-                    "status": "busy" if agent.busy_session_id else "online",
-                    "last_seen_seconds_ago": round(max(now - agent.last_seen_at, 0.0), 1),
-                }
-                for agent in sorted(self.agents.values(), key=lambda item: (item.hostname.lower(), item.client_ip))
-            ]
+            values = []
+            for agent in sorted(self.agents.values(), key=lambda item: (item.hostname.lower(), item.client_ip)):
+                connectivity = self._connectivity_payload_locked(agent, now=now)
+                values.append(
+                    {
+                        "agent_id": agent.agent_id,
+                        "hostname": agent.hostname,
+                        "client_ip": agent.client_ip,
+                        "status": "busy" if agent.busy_session_id else "online",
+                        "last_seen_seconds_ago": round(max(now - agent.last_seen_at, 0.0), 1),
+                        "client_version": agent.client_version,
+                        "server_version": APP_VERSION,
+                        "version_match": agent.client_version == APP_VERSION,
+                        "probe_port": self.config.port,
+                        **connectivity,
+                    }
+                )
+            return values
+
+    def report_connectivity_failure(
+        self,
+        agent_id: str,
+        token: str,
+        client_ip: str,
+        error_code: str,
+    ) -> dict[str, Any]:
+        agent = self.authenticate_agent(agent_id, token, client_ip)
+        normalized_code = error_code if error_code in CONNECTIVITY_FAILURE_MESSAGES else "connection_error"
+        with self.condition:
+            agent.connectivity_status = "failed"
+            agent.connectivity_checked_at = self.clock()
+            agent.connectivity_error_code = normalized_code
+            agent.connectivity_message = CONNECTIVITY_FAILURE_MESSAGES[normalized_code]
+            self.condition.notify_all()
+            return self._connectivity_payload_locked(agent)
 
     def authenticate_agent(self, agent_id: str, token: str, client_ip: str) -> AgentRecord:
         with self.lock:
@@ -271,9 +319,9 @@ class ProbeService:
         stream_count: int,
     ) -> dict[str, Any]:
         if not self.config.enabled:
-            raise ProbeServiceError("TCP 정밀 측정이 비활성화되어 있습니다.", 503)
+            raise ProbeServiceError("TCP 전송 성능 측정이 비활성화되어 있습니다.", 503)
         if not self.started or self.start_error:
-            raise ProbeServiceError(self.start_error or "TCP 정밀 측정 서버를 사용할 수 없습니다.", 503)
+            raise ProbeServiceError(self.start_error or "TCP 전송 성능 측정 서버를 사용할 수 없습니다.", 503)
         if direction not in PROBE_DIRECTIONS:
             raise ProbeServiceError("측정 방향은 업로드, 다운로드, 전체 중 하나여야 합니다.")
         if duration_seconds not in PROBE_DURATIONS:
@@ -293,6 +341,12 @@ class ProbeService:
                     raise ProbeServiceError("온라인 상태인 측정 클라이언트를 찾을 수 없습니다.", 404)
                 if agent.busy_session_id or agent.pending_job is not None:
                     raise ProbeServiceError("선택한 클라이언트에서 다른 측정이 진행 중입니다.", 409)
+                connectivity = self._connectivity_payload_locked(agent)
+                if connectivity["connectivity_status"] != "ready":
+                    raise ProbeServiceError(
+                        self._connectivity_start_error(connectivity),
+                        409,
+                    )
                 session = ProbeSession(
                     session_id=session_id,
                     session_token=secrets.token_urlsafe(32),
@@ -521,6 +575,19 @@ class ProbeService:
         try:
             connection.settimeout(5.0)
             payload = recv_frame(connection)
+            if payload.get("type") == "connectivity_check":
+                agent = self._handle_connectivity_check(client_ip, payload)
+                send_frame(
+                    connection,
+                    {
+                        "type": "connectivity_ready",
+                        "protocol_version": PROBE_PROTOCOL_VERSION,
+                        "server_version": APP_VERSION,
+                        "client_version": agent.client_version,
+                        "probe_port": self.config.port,
+                    },
+                )
+                return
             session, phase, start_group = self._attach_stream(connection, client_ip, payload)
             send_frame(connection, {"type": "ready", "session_id": session.session_id, "stream_id": payload["stream_id"]})
             handed_off = True
@@ -539,6 +606,26 @@ class ProbeService:
         finally:
             if not handed_off:
                 self._close_socket(connection)
+
+    def _handle_connectivity_check(self, client_ip: str, payload: dict[str, Any]) -> AgentRecord:
+        if int(payload.get("protocol_version", 0)) != PROBE_PROTOCOL_VERSION:
+            raise ProbeServiceError(
+                "TCP 측정 프로토콜 버전이 다릅니다. 최신 Windows 클라이언트 ZIP을 다시 받으세요.",
+                409,
+            )
+        agent_id = str(payload.get("agent_id", ""))
+        token = str(payload.get("agent_token", ""))
+        client_version = self._clean_client_version(payload.get("client_version"))
+        agent = self.authenticate_agent(agent_id, token, client_ip)
+        if agent.client_version != client_version:
+            raise ProbeServiceError("등록된 클라이언트 버전과 TCP 점검 버전이 다릅니다.", 409)
+        with self.condition:
+            agent.connectivity_status = "ready"
+            agent.connectivity_checked_at = self.clock()
+            agent.connectivity_error_code = ""
+            agent.connectivity_message = "TCP 측정 포트 연결 준비가 완료되었습니다."
+            self.condition.notify_all()
+        return agent
 
     def _attach_stream(
         self,
@@ -937,12 +1024,61 @@ class ProbeService:
                     self._finalize_session(session, "failed", "TCP 측정 클라이언트 연결이 만료되었습니다.")
             self.agents.pop(agent_id, None)
 
+    def _connectivity_payload_locked(
+        self,
+        agent: AgentRecord,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        current = self.clock() if now is None else now
+        checked_at = agent.connectivity_checked_at
+        checked_seconds_ago = (
+            round(max(current - checked_at, 0.0), 1)
+            if checked_at is not None
+            else None
+        )
+        status = agent.connectivity_status
+        message = agent.connectivity_message
+        if status == "ready" and (
+            checked_at is None or current - checked_at > PROBE_CONNECTIVITY_STALE_SECONDS
+        ):
+            status = "stale"
+            message = "최근 TCP 연결 점검 결과가 오래되었습니다."
+        return {
+            "connectivity_status": status,
+            "connectivity_error_code": agent.connectivity_error_code,
+            "connectivity_message": message,
+            "connectivity_checked_seconds_ago": checked_seconds_ago,
+        }
+
+    def _connectivity_start_error(self, connectivity: dict[str, Any]) -> str:
+        status = connectivity.get("connectivity_status")
+        if status == "failed":
+            detail = str(connectivity.get("connectivity_message") or "TCP 측정 포트 연결에 실패했습니다.")
+            return (
+                f"{detail} 서버 콘솔과 Windows 방화벽에서 TCP {self.config.port} "
+                "인바운드 허용 상태를 확인하세요."
+            )
+        if status == "stale":
+            return "최근 TCP 연결 점검 결과가 없어 측정을 시작할 수 없습니다. 자동 재점검을 기다려 주세요."
+        return "선택한 클라이언트의 TCP 연결을 확인 중입니다. 잠시 후 다시 시도하세요."
+
     @staticmethod
     def _clean_hostname(value: Any) -> str:
         hostname = "".join(character for character in str(value or "") if character.isprintable()).strip()[:64]
         if not hostname:
             raise ProbeServiceError("클라이언트 PC 이름이 비어 있습니다.")
         return hostname
+
+    @staticmethod
+    def _clean_client_version(value: Any) -> str:
+        version = "".join(character for character in str(value or "") if character.isprintable()).strip()[:32]
+        if not version:
+            raise ProbeServiceError(
+                "클라이언트 버전 정보가 없습니다. 서버 웹 화면에서 최신 Windows 클라이언트 ZIP을 다시 받으세요.",
+                409,
+            )
+        return version
 
     @staticmethod
     def _timestamp() -> str:

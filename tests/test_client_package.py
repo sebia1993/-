@@ -5,6 +5,7 @@ from zipfile import ZipFile
 
 import pytest
 
+from app_version import APP_VERSION
 from network_probe.client_package import (
     ClientPackageError,
     build_client_package,
@@ -101,8 +102,11 @@ def test_build_client_package_contains_only_autoconnect_client_files(tmp_path):
             "utf-8-sig"
         )
     assert f'--probe-client --server "{server_url}"' in command
+    assert APP_VERSION in command
     assert "set /p" not in command.lower()
     assert server_url in readme
+    assert APP_VERSION in readme
+    assert "TCP 전송 성능 측정" in readme
     assert "config.ini" in readme
     assert "TCP 측정 포트는 서버가 자동으로 전달" in readme
 

@@ -209,7 +209,7 @@ def prompt_for_probe_port_change(
         input_func = input
 
     prompt = (
-        f"TCP 정밀 측정 포트 {configured_port}이(가) 사용 중입니다. "
+        f"TCP 전송 성능 측정 포트 {configured_port}이(가) 사용 중입니다. "
         f"사용 가능한 {selected_port}(으)로 변경할까요? [Y/n]: "
     )
     while True:

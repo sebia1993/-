@@ -60,10 +60,10 @@ def create_probe_blueprint(
     def package_context() -> tuple[Path, str]:
         status_value = service.status_payload()
         if not status_value["enabled"]:
-            raise ProbeServiceError("TCP 정밀 측정이 비활성화되어 있어 클라이언트 ZIP을 제공할 수 없습니다.", 503)
+            raise ProbeServiceError("TCP 전송 성능 측정이 비활성화되어 있어 클라이언트 ZIP을 제공할 수 없습니다.", 503)
         if not status_value["available"]:
             raise ProbeServiceError(
-                str(status_value.get("error") or "TCP 정밀 측정 서버를 사용할 수 없습니다."),
+                str(status_value.get("error") or "TCP 전송 성능 측정 서버를 사용할 수 없습니다."),
                 503,
             )
         if executable_path is None:
@@ -130,6 +130,20 @@ def create_probe_blueprint(
     def register_agent():
         try:
             return jsonify(service.register_agent(payload(), client_ip()))
+        except ProbeServiceError as exc:
+            return error_response(exc)
+
+    @blueprint.post("/agents/<agent_id>/connectivity-failure")
+    def connectivity_failure(agent_id: str):
+        try:
+            return jsonify(
+                service.report_connectivity_failure(
+                    agent_id,
+                    bearer_token(),
+                    client_ip(),
+                    str(payload().get("error_code", "")),
+                )
+            )
         except ProbeServiceError as exc:
             return error_response(exc)
 

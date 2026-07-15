@@ -5,9 +5,11 @@ import socket
 import uuid
 from zipfile import ZipFile
 
+from app_version import APP_VERSION
 from app import build_probe_config, create_app, load_config, normalize_ip
 from network_measurement import NetworkMeasurementGate
 from network_probe.models import PROBE_PROTOCOL_VERSION
+from network_probe.protocol import recv_frame, send_frame
 from network_probe.service import ProbeService
 
 
@@ -17,6 +19,22 @@ def available_port() -> int:
     port = sock.getsockname()[1]
     sock.close()
     return int(port)
+
+
+def confirm_tcp_connectivity(service: ProbeService, registration: dict) -> dict:
+    with socket.create_connection(("127.0.0.1", service.config.port), timeout=3) as sock:
+        sock.settimeout(3)
+        send_frame(
+            sock,
+            {
+                "type": "connectivity_check",
+                "protocol_version": PROBE_PROTOCOL_VERSION,
+                "agent_id": registration["agent_id"],
+                "agent_token": registration["agent_token"],
+                "client_version": APP_VERSION,
+            },
+        )
+        return recv_frame(sock)
 
 
 def write_config(tmp_path, *, enabled: bool) -> str:
@@ -56,6 +74,7 @@ def test_disabled_probe_api_and_ui_are_available(tmp_path):
             "hostname": "TEST-PC",
             "server_host": "127.0.0.1",
             "protocol_version": PROBE_PROTOCOL_VERSION,
+            "client_version": APP_VERSION,
         },
     )
     index = client.get("/")
@@ -94,12 +113,22 @@ def test_probe_api_registers_agent_and_shares_measurement_gate(tmp_path):
                 "hostname": "TEST-PC",
                 "server_host": "127.0.0.1",
                 "protocol_version": PROBE_PROTOCOL_VERSION,
+                "client_version": APP_VERSION,
             },
         )
         assert registration.status_code == 200
-        token = registration.get_json()["agent_token"]
-        assert client.get("/api/network-probe/agents").get_json()["agents"][0]["hostname"] == "TEST-PC"
+        registration_payload = registration.get_json()
+        token = registration_payload["agent_token"]
+        assert registration_payload["server_version"] == APP_VERSION
+        assert registration_payload["protocol_version"] == PROBE_PROTOCOL_VERSION
+        assert confirm_tcp_connectivity(service, registration_payload)["type"] == "connectivity_ready"
+        agent = client.get("/api/network-probe/agents").get_json()["agents"][0]
+        assert agent["hostname"] == "TEST-PC"
+        assert agent["connectivity_status"] == "ready"
+        assert agent["version_match"] is True
         status = client.get("/api/network-probe/status").get_json()
+        assert status["server_version"] == APP_VERSION
+        assert status["protocol_version"] == PROBE_PROTOCOL_VERSION
         assert status["client_package_available"] is False
         assert "Release EXE" in status["client_package_error"]
 
@@ -134,6 +163,49 @@ def test_probe_api_registers_agent_and_shares_measurement_gate(tmp_path):
         cancelled = client.post(f"/api/network-probe/sessions/{session_id}/cancel")
         assert cancelled.get_json()["status"] == "cancelled"
         assert gate.is_available() is True
+    finally:
+        service.stop()
+
+
+def test_probe_api_reports_connectivity_failure_and_blocks_start(tmp_path):
+    config_path = write_config(tmp_path, enabled=True)
+    app_config = load_config(config_path)
+    service = ProbeService(
+        config=build_probe_config(app_config),
+        measurement_gate=NetworkMeasurementGate(),
+        normalize_ip=normalize_ip,
+    )
+    assert service.start() is True
+    try:
+        app = create_app(config_path, probe_service=service)
+        client = app.test_client()
+        agent_id = uuid.uuid4().hex
+        registration = client.post(
+            "/api/network-probe/agents/register",
+            json={
+                "agent_id": agent_id,
+                "hostname": "TEST-PC",
+                "server_host": "127.0.0.1",
+                "protocol_version": PROBE_PROTOCOL_VERSION,
+                "client_version": APP_VERSION,
+            },
+        ).get_json()
+        token = registration["agent_token"]
+
+        failure = client.post(
+            f"/api/network-probe/agents/{agent_id}/connectivity-failure",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"error_code": "connection_refused"},
+        )
+        assert failure.status_code == 200
+        assert failure.get_json()["connectivity_status"] == "failed"
+
+        created = client.post(
+            "/api/network-probe/sessions",
+            json={"agent_id": agent_id, "direction": "upload", "duration_seconds": 10, "stream_count": 1},
+        )
+        assert created.status_code == 409
+        assert "Windows 방화벽" in created.get_json()["error"]
     finally:
         service.stop()
 

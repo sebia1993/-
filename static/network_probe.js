@@ -69,6 +69,7 @@
     const packageLink = root.querySelector("[data-probe-client-package]");
     const packageAddress = root.querySelector("[data-probe-client-package-address]");
     const agentSelect = root.querySelector("[data-probe-agent]");
+    const clientReadiness = root.querySelector("[data-probe-client-readiness]");
     const durationSelect = root.querySelector("[data-probe-duration]");
     const fourStreamToggle = root.querySelector("[data-probe-four-stream]");
     const advancedSummary = root.querySelector("[data-probe-advanced-summary]");
@@ -92,6 +93,7 @@
     let running = false;
     let activeSessionId = "";
     let graphSeries = { upload: [], download: [] };
+    let agentsById = new Map();
 
     function updateAdvancedSummary() {
       advancedSummary.textContent = fourStreamToggle.checked
@@ -99,8 +101,58 @@
         : "고급 비교 측정";
     }
 
+    function selectedAgent() {
+      return agentsById.get(agentSelect.value) || null;
+    }
+
+    function connectivityLabel(agent) {
+      if (agent.status === "busy") return "측정 중";
+      return ({
+        checking: "연결 확인 중",
+        ready: "준비 완료",
+        failed: "연결 실패",
+        stale: "재확인 대기",
+      })[agent.connectivity_status] || "연결 확인 중";
+    }
+
+    function renderClientReadiness() {
+      const agent = selectedAgent();
+      clientReadiness.classList.remove("success", "warning", "error");
+      if (!agent) {
+        clientReadiness.classList.add("warning");
+        clientReadiness.textContent = "Windows 클라이언트 ZIP을 실행하면 여기에 연결 상태가 표시됩니다.";
+        return;
+      }
+      if (agent.status === "busy") {
+        clientReadiness.classList.add("warning");
+        clientReadiness.textContent = `다른 측정 진행 중 · ${agent.hostname} · TCP ${agent.probe_port}`;
+        return;
+      }
+      if (agent.connectivity_status === "ready") {
+        if (agent.version_match) {
+          clientReadiness.classList.add("success");
+          clientReadiness.textContent = `TCP ${agent.probe_port} 연결 준비 완료 · 클라이언트 ${agent.client_version}`;
+        } else {
+          clientReadiness.classList.add("warning");
+          clientReadiness.textContent = `TCP ${agent.probe_port} 연결 준비 완료 · 클라이언트 ${agent.client_version} / 서버 ${agent.server_version} · 최신 ZIP 사용 권장`;
+        }
+        return;
+      }
+      clientReadiness.classList.add("warning");
+      if (agent.connectivity_status === "failed") {
+        const reason = agent.connectivity_message || "TCP 측정 포트에 연결하지 못했습니다.";
+        clientReadiness.textContent = `${reason} 서버 콘솔과 Windows 방화벽의 TCP ${agent.probe_port} 인바운드 허용을 확인하세요. 약 20초 안에 자동 재점검합니다.`;
+      } else if (agent.connectivity_status === "stale") {
+        clientReadiness.textContent = `TCP ${agent.probe_port} 연결 결과가 오래되어 자동 재점검을 기다리는 중입니다.`;
+      } else {
+        clientReadiness.textContent = `TCP ${agent.probe_port} 측정 포트 연결을 확인하는 중입니다.`;
+      }
+    }
+
     function setControlsEnabled() {
-      const enabled = serviceAvailable && Boolean(agentSelect.value) && !running;
+      const agent = selectedAgent();
+      const ready = Boolean(agent) && agent.status !== "busy" && agent.connectivity_status === "ready";
+      const enabled = serviceAvailable && ready && !running;
       agentSelect.disabled = !serviceAvailable || running;
       durationSelect.disabled = !enabled;
       fourStreamToggle.disabled = !enabled;
@@ -110,6 +162,7 @@
       cancelButton.hidden = !running;
       cancelButton.disabled = !running;
       root.dataset.probeRunning = running ? "true" : "";
+      renderClientReadiness();
     }
 
     function resetResult() {
@@ -139,7 +192,7 @@
       } else if (!payload.available) {
         serviceStatus.textContent = payload.error || "TCP 측정 서버를 사용할 수 없습니다.";
       } else {
-        serviceStatus.textContent = `TCP 측정 서버 정상 · 포트 ${payload.port}`;
+        serviceStatus.textContent = `TCP 측정 서버 정상 · 서버 ${payload.server_version || "-"} · TCP ${payload.port}`;
       }
       const packageAvailable = Boolean(payload.client_package_available);
       packageLink.setAttribute("aria-disabled", packageAvailable ? "false" : "true");
@@ -163,6 +216,7 @@
         renderServiceStatus(status);
         const previous = agentSelect.value;
         const agents = Array.isArray(agentsPayload.agents) ? agentsPayload.agents : [];
+        agentsById = new Map(agents.map((agent) => [agent.agent_id, agent]));
         agentSelect.innerHTML = "";
         if (!agents.length) {
           const option = document.createElement("option");
@@ -174,7 +228,7 @@
             const option = document.createElement("option");
             option.value = agent.agent_id;
             option.disabled = agent.status === "busy" && agent.agent_id !== previous;
-            option.textContent = `${agent.hostname} · ${agent.client_ip}${agent.status === "busy" ? " · 측정 중" : ""}`;
+            option.textContent = `${agent.hostname} · ${agent.client_ip} · ${connectivityLabel(agent)}`;
             agentSelect.appendChild(option);
           });
           if (agents.some((agent) => agent.agent_id === previous)) agentSelect.value = previous;
@@ -182,6 +236,7 @@
         setControlsEnabled();
       } catch (error) {
         serviceAvailable = false;
+        agentsById = new Map();
         serviceStatus.classList.remove("success");
         serviceStatus.classList.add("warning");
         serviceStatus.textContent = error.message;
@@ -320,7 +375,13 @@
     async function startMeasurement(direction) {
       const durationSeconds = Number(durationSelect.value);
       const selectedStreams = fourStreamToggle.checked ? 4 : 1;
-      if (!agentSelect.value) return;
+      const agent = selectedAgent();
+      if (!agent || agent.status === "busy" || agent.connectivity_status !== "ready") {
+        statusText.textContent = "시작 대기";
+        phaseText.textContent = "클라이언트의 TCP 연결 준비 완료를 확인한 후 시작하세요.";
+        renderClientReadiness();
+        return;
+      }
       if ((durationSeconds === 30 || selectedStreams === 4 || direction === "full") &&
           !window.confirm("선택한 TCP 측정은 사내망 부하가 커질 수 있습니다. 시작할까요?")) return;
       resetResult();

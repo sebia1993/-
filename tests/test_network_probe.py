@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import errno
 import json
 import os
 import socket
@@ -11,9 +12,10 @@ import uuid
 import pytest
 
 import network_probe.service as service_module
+from app_version import APP_VERSION
 from network_measurement import NetworkMeasurementGate
 from network_probe.models import PROBE_PROTOCOL_VERSION, ProbeConfig
-from network_probe.agent import ProbeClientError, normalize_server_url
+from network_probe.agent import ProbeClientError, connectivity_error_code, normalize_server_url
 from network_probe.protocol import recv_frame, send_frame
 from network_probe.self_check import run_probe_self_check
 from network_probe.service import ProbeService, ProbeServiceError
@@ -63,16 +65,47 @@ def build_service(
     return service, gate
 
 
-def register(service: ProbeService) -> dict:
-    return service.register_agent(
+def check_connectivity(
+    service: ProbeService,
+    registration: dict,
+    *,
+    client_version: str = APP_VERSION,
+) -> dict:
+    with socket.create_connection(("127.0.0.1", service.config.port), timeout=3) as sock:
+        sock.settimeout(3)
+        send_frame(
+            sock,
+            {
+                "type": "connectivity_check",
+                "protocol_version": PROBE_PROTOCOL_VERSION,
+                "agent_id": registration["agent_id"],
+                "agent_token": registration["agent_token"],
+                "client_version": client_version,
+            },
+        )
+        return recv_frame(sock)
+
+
+def register(
+    service: ProbeService,
+    *,
+    client_version: str = APP_VERSION,
+    preflight: bool = True,
+) -> dict:
+    registration = service.register_agent(
         {
             "agent_id": uuid.uuid4().hex,
             "hostname": "TEST-PC",
             "server_host": "127.0.0.1",
             "protocol_version": PROBE_PROTOCOL_VERSION,
+            "client_version": client_version,
         },
         "127.0.0.1",
     )
+    if preflight and service.started:
+        response = check_connectivity(service, registration, client_version=client_version)
+        assert response["type"] == "connectivity_ready"
+    return registration
 
 
 def run_client_phase(
@@ -220,6 +253,21 @@ def test_probe_client_rejects_invalid_server_port():
         normalize_server_url("127.0.0.1:not-a-port")
 
 
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (socket.gaierror("name lookup failed"), "name_resolution_failed"),
+        (ConnectionRefusedError("refused"), "connection_refused"),
+        (socket.timeout("timed out"), "connect_timeout"),
+        (OSError(errno.ENETUNREACH, "unreachable"), "network_unreachable"),
+        (ProbeClientError("bad response"), "protocol_error"),
+        (OSError("other"), "connection_error"),
+    ],
+)
+def test_probe_connectivity_error_codes_are_stable(error, expected):
+    assert connectivity_error_code(error) == expected
+
+
 def test_windows_tcp_info_uses_winsock_vendor_ioctl_code():
     assert SIO_TCP_INFO == 0xD8000027
 
@@ -231,6 +279,123 @@ def test_disabled_probe_rejects_registration(tmp_path):
         register(service)
 
     assert exc_info.value.status_code == 503
+
+
+def test_probe_registration_requires_current_protocol_and_client_version(tmp_path):
+    service, _ = build_service(tmp_path)
+    assert service.start() is True
+    try:
+        base = {
+            "agent_id": uuid.uuid4().hex,
+            "hostname": "TEST-PC",
+            "server_host": "127.0.0.1",
+        }
+        with pytest.raises(ProbeServiceError, match="최신 Windows 클라이언트 ZIP") as protocol_error:
+            service.register_agent({**base, "protocol_version": 1, "client_version": "v0.4.2"}, "127.0.0.1")
+        assert protocol_error.value.status_code == 409
+
+        with pytest.raises(ProbeServiceError, match="클라이언트 버전 정보") as version_error:
+            service.register_agent(
+                {**base, "agent_id": uuid.uuid4().hex, "protocol_version": PROBE_PROTOCOL_VERSION},
+                "127.0.0.1",
+            )
+        assert version_error.value.status_code == 409
+    finally:
+        service.stop()
+
+
+def test_probe_measurement_waits_for_successful_tcp_preflight(tmp_path):
+    service, _ = build_service(tmp_path)
+    assert service.start() is True
+    try:
+        registration = register(service, preflight=False)
+        agent = service.list_agents()[0]
+        assert agent["connectivity_status"] == "checking"
+        assert agent["client_version"] == APP_VERSION
+        assert agent["server_version"] == APP_VERSION
+
+        with pytest.raises(ProbeServiceError, match="확인 중") as blocked:
+            service.create_session(
+                agent_id=registration["agent_id"],
+                direction="upload",
+                duration_seconds=10,
+                stream_count=1,
+            )
+        assert blocked.value.status_code == 409
+
+        response = check_connectivity(service, registration)
+        assert response["type"] == "connectivity_ready"
+        assert response["server_version"] == APP_VERSION
+        assert response["protocol_version"] == PROBE_PROTOCOL_VERSION
+        assert service.list_agents()[0]["connectivity_status"] == "ready"
+
+        created = service.create_session(
+            agent_id=registration["agent_id"],
+            direction="upload",
+            duration_seconds=10,
+            stream_count=1,
+        )
+        service.cancel_session(created["session_id"])
+    finally:
+        service.stop()
+
+
+def test_probe_connectivity_failure_and_stale_result_block_measurement(tmp_path):
+    current_time = [100.0]
+    service, _ = build_service(tmp_path, agent_ttl=100.0, clock=lambda: current_time[0])
+    assert service.start() is True
+    try:
+        registration = register(service)
+        failed = service.report_connectivity_failure(
+            registration["agent_id"],
+            registration["agent_token"],
+            "127.0.0.1",
+            "connection_refused",
+        )
+        assert failed["connectivity_status"] == "failed"
+        assert failed["connectivity_error_code"] == "connection_refused"
+        with pytest.raises(ProbeServiceError, match="Windows 방화벽"):
+            service.create_session(
+                agent_id=registration["agent_id"],
+                direction="upload",
+                duration_seconds=10,
+                stream_count=1,
+            )
+
+        assert check_connectivity(service, registration)["type"] == "connectivity_ready"
+        current_time[0] += 46.0
+        agent = service.list_agents()[0]
+        assert agent["connectivity_status"] == "stale"
+        assert agent["connectivity_checked_seconds_ago"] == 46.0
+        with pytest.raises(ProbeServiceError, match="자동 재점검"):
+            service.create_session(
+                agent_id=registration["agent_id"],
+                direction="upload",
+                duration_seconds=10,
+                stream_count=1,
+            )
+    finally:
+        service.stop()
+
+
+def test_probe_release_version_mismatch_warns_but_does_not_block(tmp_path):
+    service, _ = build_service(tmp_path)
+    assert service.start() is True
+    try:
+        registration = register(service, client_version="v0.4.3-rc.9")
+        agent = service.list_agents()[0]
+        assert agent["connectivity_status"] == "ready"
+        assert agent["version_match"] is False
+
+        created = service.create_session(
+            agent_id=registration["agent_id"],
+            direction="download",
+            duration_seconds=10,
+            stream_count=1,
+        )
+        service.cancel_session(created["session_id"])
+    finally:
+        service.stop()
 
 
 @pytest.mark.parametrize("stream_count", [1, 4])

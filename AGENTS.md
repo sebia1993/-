@@ -68,14 +68,14 @@ Use the narrowest relevant check while developing, then run the full baseline
 before calling work complete.
 
 ```powershell
-python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
+python -m compileall app_version.py app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
 python -m pytest -q
 ```
 
 On macOS in this workspace, use:
 
 ```bash
-.venv/bin/python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
+.venv/bin/python -m compileall app_version.py app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
 .venv/bin/python -m pytest -q
 ```
 

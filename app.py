@@ -20,10 +20,11 @@ from urllib.parse import quote, urlparse
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
 from werkzeug.serving import make_server
 
+from app_version import APP_VERSION
 from network_sustained import create_sustained_blueprint, ensure_sustained_storage
 from network_measurement import NetworkMeasurementGate
 from network_probe.agent import ProbeClientError, run_probe_client
-from network_probe.models import ProbeConfig
+from network_probe.models import PROBE_PROTOCOL_VERSION, ProbeConfig
 from network_probe.routes import create_probe_blueprint
 from network_probe.service import ProbeService, ensure_probe_storage
 from startup_ports import (
@@ -676,7 +677,15 @@ def create_app(
 
     @app.get("/api/health")
     def health_check():
-        response = jsonify({"app": APP_ID, "status": "ok", "port": config.port})
+        response = jsonify(
+            {
+                "app": APP_ID,
+                "status": "ok",
+                "port": config.port,
+                "version": APP_VERSION,
+                "probe_protocol_version": PROBE_PROTOCOL_VERSION,
+            }
+        )
         response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -1130,7 +1139,7 @@ def print_firewall_status(port: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="사내 업로드 서버 및 TCP 측정 클라이언트")
+    parser = argparse.ArgumentParser(description="사내 업로드 서버 및 TCP 전송 성능 측정 클라이언트")
     parser.add_argument("--smoke-check", action="store_true")
     parser.add_argument("--probe-client", action="store_true")
     parser.add_argument("--server", default="")
@@ -1164,14 +1173,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             migration = migrate_config(resolved_config_path)
             if migration.probe_enabled_changed:
-                print("기존 설정을 업데이트해 TCP 정밀 측정을 기본 활성화했습니다.")
+                print("기존 설정을 업데이트해 TCP 전송 성능 측정을 기본 활성화했습니다.")
         except OSError as exc:
             migration_failed = True
             print(
                 f"설정 마이그레이션을 config.ini에 저장하지 못했습니다: {exc}",
                 file=sys.stderr,
             )
-            print("현재 실행에서는 TCP 정밀 측정을 활성화합니다.", file=sys.stderr)
+            print("현재 실행에서는 TCP 전송 성능 측정을 활성화합니다.", file=sys.stderr)
 
     configured = load_config(config_path)
     if migration_required and migration_failed:
@@ -1280,10 +1289,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if active_config.network_probe_enabled:
             if probe_port_error:
-                print(f"TCP 정밀 측정 서버 시작 실패: {probe_port_error}", file=sys.stderr)
+                print(f"TCP 전송 성능 측정 서버 시작 실패: {probe_port_error}", file=sys.stderr)
                 print("파일 업로드 웹 서버는 계속 실행합니다.", file=sys.stderr)
             elif probe_service.start():
-                print(f"TCP 정밀 측정 서버가 {active_config.network_probe_port} 포트에서 시작되었습니다.")
+                print(f"TCP 전송 성능 측정 서버가 {active_config.network_probe_port} 포트에서 시작되었습니다.")
                 if probe_port_resolution and probe_port_resolution.changed:
                     try:
                         persist_probe_port_change(
@@ -1301,7 +1310,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                 print_firewall_status(active_config.network_probe_port)
             else:
-                print(f"TCP 정밀 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
+                print(f"TCP 전송 성능 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
                 print("파일 업로드 웹 서버는 계속 실행합니다.", file=sys.stderr)
 
         print_server_addresses(active_config)

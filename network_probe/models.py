@@ -6,11 +6,14 @@ from pathlib import Path
 from typing import Any
 
 
-PROBE_PROTOCOL_VERSION = 1
+PROBE_PROTOCOL_VERSION = 2
 PROBE_DIRECTIONS = ("upload", "download", "full")
 PROBE_DURATIONS = (10, 30)
 PROBE_STREAM_COUNTS = (1, 4)
 PROBE_WARMUP_SECONDS = 3.0
+PROBE_CONNECTIVITY_INTERVAL_SECONDS = 20.0
+PROBE_CONNECTIVITY_STALE_SECONDS = 45.0
+PROBE_CONNECTIVITY_TIMEOUT_SECONDS = 3.0
 PROBE_TERMINAL_SESSION_TTL_SECONDS = 30 * 60.0
 PROBE_MAX_TERMINAL_SESSIONS = 100
 PROBE_MAX_CONNECTION_HANDLERS = 16
@@ -40,8 +43,13 @@ class AgentRecord:
     client_ip: str
     server_host: str
     protocol_version: int
+    client_version: str
     registered_at: float
     last_seen_at: float
+    connectivity_status: str = "checking"
+    connectivity_checked_at: float | None = None
+    connectivity_error_code: str = ""
+    connectivity_message: str = ""
     busy_session_id: str = ""
     pending_job: dict[str, Any] | None = None
 

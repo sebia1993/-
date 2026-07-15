@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import socket
 import threading
@@ -10,7 +11,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-from .models import PROBE_PROTOCOL_VERSION
+from app_version import APP_VERSION
+
+from .models import PROBE_CONNECTIVITY_TIMEOUT_SECONDS, PROBE_PROTOCOL_VERSION
 from .protocol import ProbeProtocolError, recv_frame, send_frame
 from .tcp_engine import (
     ProbeCancelled,
@@ -86,6 +89,7 @@ class ProbeAgent:
         self.hostname = socket.gethostname()[:64] or "Windows-PC"
         self.token = ""
         self.stop_event = threading.Event()
+        self._last_connectivity_notice: tuple[str, str] | None = None
 
     def register(self) -> dict[str, Any]:
         response = self.http.request_json(
@@ -96,6 +100,7 @@ class ProbeAgent:
                 "hostname": self.hostname,
                 "server_host": self.server_host,
                 "protocol_version": PROBE_PROTOCOL_VERSION,
+                "client_version": APP_VERSION,
             },
         )
         self.token = str(response.get("agent_token", ""))
@@ -109,9 +114,10 @@ class ProbeAgent:
             try:
                 registration = self.register()
                 print(
-                    f"TCP 측정 클라이언트 연결됨: {self.hostname} "
+                    f"TCP 전송 성능 측정 클라이언트 {APP_VERSION} 등록됨: {self.hostname} "
                     f"({registration.get('client_ip', '-')})"
                 )
+                self._check_connectivity(registration)
                 print("웹 화면에서 이 PC를 선택해 측정을 시작하세요. 종료: Ctrl+C")
                 retry_seconds = 1
                 while not self.stop_event.is_set():
@@ -124,6 +130,7 @@ class ProbeAgent:
                     job = response.get("job")
                     if isinstance(job, dict):
                         self._run_job(job)
+                    self._check_connectivity(registration)
             except KeyboardInterrupt:
                 self.stop_event.set()
             except ProbeClientError as exc:
@@ -134,6 +141,68 @@ class ProbeAgent:
                 self.stop_event.wait(retry_seconds)
                 retry_seconds = min(retry_seconds * 2, 15)
         return 0
+
+    def _check_connectivity(self, registration: dict[str, Any]) -> bool:
+        try:
+            probe_port = int(registration.get("probe_port", 0))
+            if not 1 <= probe_port <= 65535:
+                raise ProbeClientError("서버가 올바른 TCP 측정 포트를 반환하지 않았습니다.")
+            with socket.create_connection(
+                (self.server_host, probe_port),
+                timeout=PROBE_CONNECTIVITY_TIMEOUT_SECONDS,
+            ) as sock:
+                sock.settimeout(PROBE_CONNECTIVITY_TIMEOUT_SECONDS)
+                send_frame(
+                    sock,
+                    {
+                        "type": "connectivity_check",
+                        "protocol_version": PROBE_PROTOCOL_VERSION,
+                        "agent_id": self.agent_id,
+                        "agent_token": self.token,
+                        "client_version": APP_VERSION,
+                    },
+                )
+                response = recv_frame(sock)
+            if response.get("type") == "error":
+                raise ProbeClientError(str(response.get("error", "TCP 연결 점검이 거부되었습니다.")))
+            if (
+                response.get("type") != "connectivity_ready"
+                or int(response.get("protocol_version", 0)) != PROBE_PROTOCOL_VERSION
+            ):
+                raise ProbeClientError("TCP 연결 점검 응답이 올바르지 않습니다.")
+        except (OSError, ProbeProtocolError, ProbeClientError, TypeError, ValueError) as exc:
+            error_code = connectivity_error_code(exc)
+            self._report_connectivity_failure(error_code)
+            self._print_connectivity_notice(
+                "failed",
+                f"TCP {registration.get('probe_port', '-')} 연결 점검 실패: {exc}",
+            )
+            return False
+
+        self._print_connectivity_notice(
+            "ready",
+            f"TCP {probe_port} 연결 준비 완료",
+        )
+        return True
+
+    def _report_connectivity_failure(self, error_code: str) -> None:
+        try:
+            self.http.request_json(
+                "POST",
+                f"/api/network-probe/agents/{self.agent_id}/connectivity-failure",
+                token=self.token,
+                payload={"error_code": error_code},
+                timeout=5,
+            )
+        except ProbeClientError:
+            pass
+
+    def _print_connectivity_notice(self, status: str, message: str) -> None:
+        notice = (status, message)
+        if notice == self._last_connectivity_notice:
+            return
+        self._last_connectivity_notice = notice
+        print(message)
 
     def _run_job(self, job: dict[str, Any]) -> None:
         session_id = str(job.get("session_id", ""))
@@ -302,3 +371,21 @@ class ProbeAgent:
 
 def run_probe_client(server_url: str) -> int:
     return ProbeAgent(server_url).run_forever()
+
+
+def connectivity_error_code(exc: BaseException) -> str:
+    if isinstance(exc, socket.gaierror):
+        return "name_resolution_failed"
+    if isinstance(exc, ConnectionRefusedError):
+        return "connection_refused"
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "connect_timeout"
+    if isinstance(exc, (ProbeProtocolError, ProbeClientError, TypeError, ValueError)):
+        return "protocol_error"
+    if isinstance(exc, OSError) and exc.errno in {
+        errno.ENETDOWN,
+        errno.ENETUNREACH,
+        errno.EHOSTUNREACH,
+    }:
+        return "network_unreachable"
+    return "connection_error"

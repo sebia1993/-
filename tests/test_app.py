@@ -9,6 +9,7 @@ from zipfile import ZipFile
 import pytest
 
 import app as app_module
+from app_version import APP_VERSION
 from app import (
     NETWORK_CHECK_FIELDS,
     build_download_url,
@@ -23,6 +24,7 @@ from app import (
 )
 from network_sustained import SUSTAINED_LOG_FIELDS
 from network_measurement import NetworkMeasurementGate
+from network_probe.models import PROBE_PROTOCOL_VERSION
 from network_probe.service import PROBE_LOG_FIELDS
 from tools.verify_release_zip import REQUIRED_FILES, verify_zip
 
@@ -693,6 +695,10 @@ def test_probe_network_js_uses_audience_friendly_summary():
     assert "data-probe-chart-details" in script
     assert "data-probe-technical-details" in script
     assert "data-probe-cwnd" not in script
+    assert "connectivity_status === \"ready\"" in script
+    assert "TCP ${agent.probe_port} 연결 준비 완료" in script
+    assert "약 20초 안에 자동 재점검" in script
+    assert "최신 ZIP 사용 권장" in script
 
 
 def test_sustained_progress_uses_its_own_time_based_style():
@@ -710,6 +716,14 @@ def test_windows_release_checksum_uses_portable_lf_line_ending():
     assert '"$Hash  $PackageName.zip`n"' in script
     assert "ReadAllBytes($ShaPath) -contains 13" in script
     assert "Set-Content -Path $ShaPath" not in script
+
+
+def test_windows_release_build_requires_source_version_match():
+    script = Path("tools/build_windows_release.ps1").read_text(encoding="utf-8")
+
+    assert 'from app_version import APP_VERSION' in script
+    assert '$SourceVersion -ne $Version' in script
+    assert 'does not match requested release' in script
 
 
 def test_csv_header_is_utf8_sig(app_client):
@@ -734,7 +748,13 @@ def test_health_endpoint_identifies_app_and_active_port(app_client):
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json == {"app": "internal-upload", "status": "ok", "port": 8000}
+    assert response.json == {
+        "app": "internal-upload",
+        "status": "ok",
+        "port": 8000,
+        "version": APP_VERSION,
+        "probe_protocol_version": PROBE_PROTOCOL_VERSION,
+    }
     assert response.headers["Cache-Control"] == "no-store"
 
 

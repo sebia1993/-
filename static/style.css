@@ -223,6 +223,11 @@ select:disabled {
   margin: 0 0 14px;
 }
 
+.probe-client-readiness {
+  min-height: 46px;
+  margin: -4px 0 14px;
+}
+
 .probe-client-package {
   margin: 0 0 16px;
   padding: 0 0 14px;
