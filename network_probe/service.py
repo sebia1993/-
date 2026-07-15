@@ -146,6 +146,7 @@ class ProbeService:
 
     def status_payload(self) -> dict[str, Any]:
         with self.lock:
+            self._cleanup_terminal_sessions_locked()
             self._cleanup_expired_agents_locked()
             return {
                 "enabled": self.config.enabled,
@@ -272,6 +273,7 @@ class ProbeService:
             raise ProbeServiceError("다른 네트워크 측정이 진행 중입니다.", 409)
         try:
             with self.condition:
+                self._cleanup_terminal_sessions_locked()
                 self._cleanup_expired_agents_locked()
                 agent = self.agents.get(agent_id)
                 if agent is None:
@@ -313,6 +315,7 @@ class ProbeService:
 
     def session_status(self, session_id: str) -> dict[str, Any]:
         with self.lock:
+            self._cleanup_terminal_sessions_locked()
             session = self._require_session_locked(session_id)
             phases = session.phases()
             completed_count = len(session.combined_results)
@@ -705,6 +708,7 @@ class ProbeService:
             if session.status not in TERMINAL_STATUSES:
                 session.status = status
                 session.error = error.strip()[:500]
+                session.completed_at_monotonic = self.clock()
                 session.cancel_event.set()
                 agent = self.agents.get(session.agent_id)
                 if agent and agent.busy_session_id == session.session_id:
@@ -712,8 +716,10 @@ class ProbeService:
                     agent.pending_job = None
                 self.measurement_gate.release("tcp_probe", session.session_id)
                 sockets = [sock for values in session.sockets.values() for sock in values.values()]
+                session.sockets.clear()
                 self.condition.notify_all()
                 should_persist = True
+                self._cleanup_terminal_sessions_locked(preserve_session_id=session.session_id)
         for sock in sockets:
             self._close_socket(sock)
         if should_persist:
@@ -830,6 +836,39 @@ class ProbeService:
         if session is None:
             raise ProbeServiceError("TCP 측정 세션을 찾을 수 없습니다.", 404)
         return session
+
+    def _cleanup_terminal_sessions_locked(self, *, preserve_session_id: str = "") -> None:
+        now = self.clock()
+        ttl_seconds = max(float(self.config.terminal_session_ttl_seconds), 0.0)
+        expired_ids = [
+            session_id
+            for session_id, session in self.sessions.items()
+            if session_id != preserve_session_id
+            and session.status in TERMINAL_STATUSES
+            and session.completed_at_monotonic is not None
+            and now - session.completed_at_monotonic > ttl_seconds
+        ]
+        for session_id in expired_ids:
+            self.sessions.pop(session_id, None)
+
+        terminal_sessions = sorted(
+            (
+                session
+                for session in self.sessions.values()
+                if session.session_id != preserve_session_id
+                and session.status in TERMINAL_STATUSES
+            ),
+            key=lambda session: (
+                session.completed_at_monotonic
+                if session.completed_at_monotonic is not None
+                else float("inf"),
+                session.session_id,
+            ),
+        )
+        terminal_count = len(terminal_sessions) + int(bool(preserve_session_id))
+        overflow = terminal_count - max(int(self.config.max_terminal_sessions), 1)
+        for session in terminal_sessions[: max(overflow, 0)]:
+            self.sessions.pop(session.session_id, None)
 
     def _require_agent_session_locked(self, session_id: str, agent_id: str) -> ProbeSession:
         session = self._require_session_locked(session_id)

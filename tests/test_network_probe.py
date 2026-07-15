@@ -35,6 +35,9 @@ def build_service(
     enabled: bool = True,
     attach_timeout: float = 10.0,
     agent_ttl: float = 10.0,
+    terminal_ttl: float = 30 * 60.0,
+    max_terminal_sessions: int = 100,
+    clock=time.perf_counter,
 ) -> tuple[ProbeService, NetworkMeasurementGate]:
     gate = NetworkMeasurementGate()
     service = ProbeService(
@@ -48,9 +51,12 @@ def build_service(
             long_poll_seconds=0.05,
             agent_ttl_seconds=agent_ttl,
             stream_attach_timeout_seconds=attach_timeout,
+            terminal_session_ttl_seconds=terminal_ttl,
+            max_terminal_sessions=max_terminal_sessions,
         ),
         measurement_gate=gate,
         normalize_ip=lambda value: value or "",
+        clock=clock,
     )
     return service, gate
 
@@ -331,6 +337,81 @@ def test_probe_storage_failure_does_not_leave_measurement_gate_locked(tmp_path, 
         assert result["status"] == "failed"
         assert "결과 저장 실패" in result["error"]
         assert gate.is_available() is True
+    finally:
+        service.stop()
+
+
+def test_probe_terminal_sessions_are_bounded_and_release_socket_references(tmp_path):
+    service, _ = build_service(tmp_path, max_terminal_sessions=2)
+    assert service.start() is True
+
+    class DummySocket:
+        def __init__(self):
+            self.closed = False
+
+        def shutdown(self, _how):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    try:
+        registration = register(service)
+        session_ids = []
+        session_records = []
+        sockets = []
+        for _ in range(3):
+            created = service.create_session(
+                agent_id=registration["agent_id"],
+                direction="upload",
+                duration_seconds=10,
+                stream_count=1,
+            )
+            session = service.sessions[created["session_id"]]
+            dummy_socket = DummySocket()
+            session.sockets["upload"] = {0: dummy_socket}
+            service.cancel_session(created["session_id"])
+            session_ids.append(created["session_id"])
+            session_records.append(session)
+            sockets.append(dummy_socket)
+
+        assert session_ids[0] not in service.sessions
+        assert set(service.sessions) == set(session_ids[1:])
+        assert all(session.sockets == {} for session in session_records)
+        assert all(sock.closed for sock in sockets)
+    finally:
+        service.stop()
+
+
+def test_probe_terminal_session_ttl_prunes_memory_but_keeps_saved_result(tmp_path):
+    current_time = [100.0]
+    service, _ = build_service(
+        tmp_path,
+        terminal_ttl=5.0,
+        clock=lambda: current_time[0],
+    )
+    assert service.start() is True
+    try:
+        registration = register(service)
+        created = service.create_session(
+            agent_id=registration["agent_id"],
+            direction="upload",
+            duration_seconds=10,
+            stream_count=1,
+        )
+        session_id = created["session_id"]
+        service.cancel_session(session_id)
+        result_path = service.result_path_for(session_id)
+
+        current_time[0] += 6.0
+        service.status_payload()
+
+        assert session_id not in service.sessions
+        assert result_path.exists()
+        assert service.result_path_for(session_id) == result_path
+        with pytest.raises(ProbeServiceError) as exc_info:
+            service.session_status(session_id)
+        assert exc_info.value.status_code == 404
     finally:
         service.stop()
 

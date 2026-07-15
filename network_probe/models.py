@@ -11,6 +11,8 @@ PROBE_DIRECTIONS = ("upload", "download", "full")
 PROBE_DURATIONS = (10, 30)
 PROBE_STREAM_COUNTS = (1, 4)
 PROBE_WARMUP_SECONDS = 3.0
+PROBE_TERMINAL_SESSION_TTL_SECONDS = 30 * 60.0
+PROBE_MAX_TERMINAL_SESSIONS = 100
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,8 @@ class ProbeConfig:
     agent_ttl_seconds: float = 45.0
     long_poll_seconds: float = 20.0
     stream_attach_timeout_seconds: float = 10.0
+    terminal_session_ttl_seconds: float = PROBE_TERMINAL_SESSION_TTL_SECONDS
+    max_terminal_sessions: int = PROBE_MAX_TERMINAL_SESSIONS
 
 
 @dataclass
@@ -58,6 +62,7 @@ class ProbeSession:
     phase_started_at: float = 0.0
     error: str = ""
     job_claimed: bool = False
+    completed_at_monotonic: float | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
     sockets: dict[str, dict[int, Any]] = field(default_factory=dict)
     server_results: dict[str, dict[str, Any]] = field(default_factory=dict)
