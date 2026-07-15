@@ -199,7 +199,7 @@ TCP 전송 성능 측정:
 
 ## 검증
 
-- ``python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools`` 통과
+- ``python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools`` 통과
 - ``python -m pytest -q`` 통과
 - ``InternalUpload.exe --smoke-check`` 통과
 - ``InternalUpload.exe --probe-self-check`` 통과

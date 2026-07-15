@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from network_measurement import NetworkMeasurementGate
+from result_storage import write_json_atomically
 
 from .models import (
     PROBE_DIRECTIONS,
@@ -357,14 +358,16 @@ class ProbeService:
                 "progress_percent": round(min(max(progress, 0.0), 100.0), 1),
                 "results": dict(session.combined_results),
                 "error": session.error,
+                "result_available": session.result_available,
+                "persistence_complete": session.persistence_complete,
                 "result_url": (
                     f"/api/network-probe/results/{session.session_id}.json"
-                    if session.status in TERMINAL_STATUSES
+                    if session.result_available
                     else ""
                 ),
                 "excel_url": (
                     f"/api/network-probe/results/{session.session_id}.xlsx"
-                    if session.status in TERMINAL_STATUSES
+                    if session.result_available
                     else ""
                 ),
             }
@@ -747,7 +750,9 @@ class ProbeService:
             if session.status not in TERMINAL_STATUSES:
                 session.status = status
                 session.error = error.strip()[:500]
-                session.completed_at_monotonic = self.clock()
+                session.completed_at_monotonic = None
+                session.result_available = False
+                session.persistence_complete = False
                 session.cancel_event.set()
                 agent = self.agents.get(session.agent_id)
                 if agent and agent.busy_session_id == session.session_id:
@@ -758,17 +763,28 @@ class ProbeService:
                 session.sockets.clear()
                 self.condition.notify_all()
                 should_persist = True
-                self._cleanup_terminal_sessions_locked(preserve_session_id=session.session_id)
         for sock in sockets:
             self._close_socket(sock)
         if should_persist:
             try:
                 self._persist_result(session)
             except Exception as exc:
-                with self.lock:
+                with self.condition:
                     session.status = "failed"
                     session.error = f"TCP 측정 결과 저장 실패: {exc}"[:500]
+                    session.result_available = False
+                    session.persistence_complete = True
+                    session.completed_at_monotonic = self.clock()
+                    self._cleanup_terminal_sessions_locked(preserve_session_id=session.session_id)
+                    self.condition.notify_all()
                 print(session.error, file=sys.stderr)
+            else:
+                with self.condition:
+                    session.result_available = True
+                    session.persistence_complete = True
+                    session.completed_at_monotonic = self.clock()
+                    self._cleanup_terminal_sessions_locked(preserve_session_id=session.session_id)
+                    self.condition.notify_all()
 
     def _persist_result(self, session: ProbeSession) -> None:
         completed_at = self._timestamp()
@@ -795,61 +811,56 @@ class ProbeService:
         }
         ensure_probe_storage(self.config.log_path, self.config.results_root)
         path = self.config.results_root / f"{session.session_id}.json"
-        temporary = path.with_suffix(".json.tmp")
         relative_path = f"data/network_probe_results/{path.name}"
         with self.storage_lock:
             original_log_size = self.config.log_path.stat().st_size
+            write_json_atomically(path, result)
             try:
-                temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-                temporary.replace(path)
+                with self.config.log_path.open("a", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=PROBE_LOG_FIELDS)
+                    phases = session.phases()
+                    for phase in phases:
+                        combined = session.combined_results.get(phase, {})
+                        sender = combined.get("sender", {})
+                        receiver = combined.get("receiver", {})
+                        telemetry = sender.get("telemetry", {})
+                        writer.writerow(
+                            {
+                                "checked_at": completed_at,
+                                "session_id": session.session_id,
+                                "agent_id": session.agent_id,
+                                "agent_hostname": session.agent_hostname,
+                                "client_ip": session.client_ip,
+                                "server_host": session.server_host,
+                                "requested_direction": session.requested_direction,
+                                "phase": phase,
+                                "duration_seconds": session.duration_seconds,
+                                "warmup_seconds": self.config.warmup_seconds,
+                                "stream_count": session.stream_count,
+                                "sender_bytes": sender.get("bytes", ""),
+                                "receiver_bytes": receiver.get("bytes", ""),
+                                "sender_mbps": sender.get("average_mbps", ""),
+                                "receiver_mbps": receiver.get("average_mbps", ""),
+                                "median_rtt_ms": self._microseconds_to_milliseconds(telemetry.get("rtt_us")),
+                                "min_rtt_ms": self._microseconds_to_milliseconds(telemetry.get("min_rtt_us")),
+                                "cwnd_bytes": telemetry.get("cwnd_bytes", "") if telemetry.get("available") else "",
+                                "retransmitted_bytes": telemetry.get("bytes_retrans", "") if telemetry.get("available") else "",
+                                "status": session.status,
+                                "error": session.error,
+                                "result_json": relative_path,
+                            }
+                        )
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except Exception:
                 try:
-                    with self.config.log_path.open("a", encoding="utf-8", newline="") as handle:
-                        writer = csv.DictWriter(handle, fieldnames=PROBE_LOG_FIELDS)
-                        phases = session.phases()
-                        for phase in phases:
-                            combined = session.combined_results.get(phase, {})
-                            sender = combined.get("sender", {})
-                            receiver = combined.get("receiver", {})
-                            telemetry = sender.get("telemetry", {})
-                            writer.writerow(
-                                {
-                                    "checked_at": completed_at,
-                                    "session_id": session.session_id,
-                                    "agent_id": session.agent_id,
-                                    "agent_hostname": session.agent_hostname,
-                                    "client_ip": session.client_ip,
-                                    "server_host": session.server_host,
-                                    "requested_direction": session.requested_direction,
-                                    "phase": phase,
-                                    "duration_seconds": session.duration_seconds,
-                                    "warmup_seconds": self.config.warmup_seconds,
-                                    "stream_count": session.stream_count,
-                                    "sender_bytes": sender.get("bytes", ""),
-                                    "receiver_bytes": receiver.get("bytes", ""),
-                                    "sender_mbps": sender.get("average_mbps", ""),
-                                    "receiver_mbps": receiver.get("average_mbps", ""),
-                                    "median_rtt_ms": self._microseconds_to_milliseconds(telemetry.get("rtt_us")),
-                                    "min_rtt_ms": self._microseconds_to_milliseconds(telemetry.get("min_rtt_us")),
-                                    "cwnd_bytes": telemetry.get("cwnd_bytes", "") if telemetry.get("available") else "",
-                                    "retransmitted_bytes": telemetry.get("bytes_retrans", "") if telemetry.get("available") else "",
-                                    "status": session.status,
-                                    "error": session.error,
-                                    "result_json": relative_path,
-                                }
-                            )
+                    with self.config.log_path.open("r+b") as handle:
+                        handle.truncate(original_log_size)
                         handle.flush()
                         os.fsync(handle.fileno())
-                except Exception:
-                    try:
-                        with self.config.log_path.open("r+b") as handle:
-                            handle.truncate(original_log_size)
-                            handle.flush()
-                            os.fsync(handle.fileno())
-                    finally:
-                        path.unlink(missing_ok=True)
-                    raise
-            finally:
-                temporary.unlink(missing_ok=True)
+                finally:
+                    path.unlink(missing_ok=True)
+                raise
 
     def _validated_side_result(self, value: Any, phase: str) -> dict[str, Any]:
         if phase not in {"upload", "download"} or not isinstance(value, dict):

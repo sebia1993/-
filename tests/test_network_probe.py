@@ -391,8 +391,71 @@ def test_probe_storage_failure_does_not_leave_measurement_gate_locked(tmp_path, 
 
         assert result["status"] == "failed"
         assert "결과 저장 실패" in result["error"]
+        assert result["persistence_complete"] is True
+        assert result["result_available"] is False
+        assert result["result_url"] == ""
+        assert result["excel_url"] == ""
         assert gate.is_available() is True
     finally:
+        service.stop()
+
+
+def test_probe_result_urls_wait_until_persistence_succeeds(tmp_path, monkeypatch):
+    service, _ = build_service(tmp_path)
+    assert service.start() is True
+    persistence_started = threading.Event()
+    allow_persistence = threading.Event()
+    cancellation_result = []
+    errors = []
+    original_persist = service._persist_result
+
+    def blocking_persist(session):
+        persistence_started.set()
+        if not allow_persistence.wait(timeout=3):
+            raise TimeoutError("test persistence was not released")
+        original_persist(session)
+
+    try:
+        registration = register(service)
+        created = service.create_session(
+            agent_id=registration["agent_id"],
+            direction="upload",
+            duration_seconds=10,
+            stream_count=1,
+        )
+        session_id = created["session_id"]
+        monkeypatch.setattr(service, "_persist_result", blocking_persist)
+
+        def cancel_session():
+            try:
+                cancellation_result.append(service.cancel_session(session_id))
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=cancel_session)
+        thread.start()
+        assert persistence_started.wait(timeout=2)
+
+        pending = service.session_status(session_id)
+        assert pending["status"] == "cancelled"
+        assert pending["persistence_complete"] is False
+        assert pending["result_available"] is False
+        assert pending["result_url"] == ""
+        assert pending["excel_url"] == ""
+
+        allow_persistence.set()
+        thread.join(timeout=3)
+
+        assert not thread.is_alive()
+        assert errors == []
+        assert len(cancellation_result) == 1
+        completed = cancellation_result[0]
+        assert completed["persistence_complete"] is True
+        assert completed["result_available"] is True
+        assert completed["result_url"].endswith(f"/{session_id}.json")
+        assert completed["excel_url"].endswith(f"/{session_id}.xlsx")
+    finally:
+        allow_persistence.set()
         service.stop()
 
 

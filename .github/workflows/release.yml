@@ -41,7 +41,7 @@ jobs:
       - name: Run source checks
         shell: pwsh
         run: |
-          python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools
+          python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
           python -m pytest -q
 
       - name: Build Windows release ZIP

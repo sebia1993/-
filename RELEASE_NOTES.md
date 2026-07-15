@@ -332,21 +332,21 @@ ZIP 내부 구조:
 Release 또는 GitHub push 전에 다음 검증을 실행합니다.
 
 ```powershell
-python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools
+python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
 python -m pytest -q
 ```
 
 macOS 작업 환경에서는 다음 명령을 사용합니다.
 
 ```bash
-.venv/bin/python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools
+.venv/bin/python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
 .venv/bin/python -m pytest -q
 ```
 
 Windows Release ZIP 검증은 GitHub Actions `windows-latest`에서 실행합니다.
 
 ```powershell
-python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools
+python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
 python -m pytest -q
 pwsh -NoProfile -File .\tools\build_windows_release.ps1 -Version v0.4.0
 InternalUpload.exe --smoke-check

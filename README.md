@@ -180,7 +180,7 @@ python -m venv .venv
 전체 소스 검사:
 
 ```bat
-.venv\Scripts\python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py network_probe tests tools
+.venv\Scripts\python -m compileall app.py startup_ports.py network_sustained.py sustained_excel.py network_measurement.py result_storage.py network_probe tests tools
 ```
 
 실행파일 자체 점검:

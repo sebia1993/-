@@ -17,6 +17,7 @@ from typing import Any, Callable
 from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 
 from network_measurement import NetworkMeasurementGate
+from result_storage import write_json_atomically
 from sustained_excel import (
     EXCEL_MIME_TYPE,
     SustainedExcelError,
@@ -469,52 +470,47 @@ class SustainedCheckManager:
     def _persist_result(self, result: dict[str, Any]) -> None:
         ensure_sustained_storage(self.log_path, self.results_root)
         result_path = self.results_root / f"{result['session_id']}.json"
-        temporary_path = result_path.with_suffix(".json.tmp")
         relative_result_path = f"data/network_check_results/{result_path.name}"
         with self.storage_lock:
+            original_log_size = self.log_path.stat().st_size
+            write_json_atomically(result_path, result)
             try:
-                original_log_size = self.log_path.stat().st_size
-                temporary_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-                temporary_path.replace(result_path)
+                with self.log_path.open("a", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=SUSTAINED_LOG_FIELDS)
+                    for direction, summary in result["directions"].items():
+                        writer.writerow(
+                            {
+                                "checked_at": result["completed_at"],
+                                "session_id": result["session_id"],
+                                "client_ip": result["client_ip"],
+                                "direction": direction,
+                                "duration_seconds": result["requested"]["duration_seconds"],
+                                "warmup_seconds": result["requested"]["warmup_seconds"],
+                                "stream_count": result["requested"]["stream_count"],
+                                "bytes_transferred": summary["bytes_transferred"],
+                                "actual_duration_seconds": summary["actual_duration_seconds"],
+                                "average_mbps": summary["average_mbps"],
+                                "median_mbps": summary["median_mbps"],
+                                "min_mbps": summary["min_mbps"],
+                                "max_mbps": summary["max_mbps"],
+                                "variability_percent": summary["variability_percent"],
+                                "http_latency_median_ms": result["http_latency"]["median_ms"] or "",
+                                "status": result["status"],
+                                "error": result["error"],
+                                "result_json": relative_result_path,
+                            }
+                        )
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except Exception:
                 try:
-                    with self.log_path.open("a", encoding="utf-8", newline="") as handle:
-                        writer = csv.DictWriter(handle, fieldnames=SUSTAINED_LOG_FIELDS)
-                        for direction, summary in result["directions"].items():
-                            writer.writerow(
-                                {
-                                    "checked_at": result["completed_at"],
-                                    "session_id": result["session_id"],
-                                    "client_ip": result["client_ip"],
-                                    "direction": direction,
-                                    "duration_seconds": result["requested"]["duration_seconds"],
-                                    "warmup_seconds": result["requested"]["warmup_seconds"],
-                                    "stream_count": result["requested"]["stream_count"],
-                                    "bytes_transferred": summary["bytes_transferred"],
-                                    "actual_duration_seconds": summary["actual_duration_seconds"],
-                                    "average_mbps": summary["average_mbps"],
-                                    "median_mbps": summary["median_mbps"],
-                                    "min_mbps": summary["min_mbps"],
-                                    "max_mbps": summary["max_mbps"],
-                                    "variability_percent": summary["variability_percent"],
-                                    "http_latency_median_ms": result["http_latency"]["median_ms"] or "",
-                                    "status": result["status"],
-                                    "error": result["error"],
-                                    "result_json": relative_result_path,
-                                }
-                            )
+                    with self.log_path.open("r+b") as handle:
+                        handle.truncate(original_log_size)
                         handle.flush()
                         os.fsync(handle.fileno())
-                except Exception:
-                    try:
-                        with self.log_path.open("r+b") as handle:
-                            handle.truncate(original_log_size)
-                            handle.flush()
-                            os.fsync(handle.fileno())
-                    finally:
-                        result_path.unlink(missing_ok=True)
-                    raise
-            finally:
-                temporary_path.unlink(missing_ok=True)
+                finally:
+                    result_path.unlink(missing_ok=True)
+                raise
 
 
 def create_sustained_blueprint(

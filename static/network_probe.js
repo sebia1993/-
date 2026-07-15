@@ -280,7 +280,12 @@
         excelLink.setAttribute("download", "");
       }
       if (["completed", "cancelled", "failed"].includes(payload.status)) {
-        statusText.textContent = payload.status === "completed" ? "완료" : payload.status === "cancelled" ? "취소" : "실패";
+        if (payload.persistence_complete === false) {
+          statusText.textContent = "결과 저장 중";
+          phaseText.textContent = "측정 결과를 파일에 저장하고 있습니다.";
+        } else {
+          statusText.textContent = payload.status === "completed" ? "완료" : payload.status === "cancelled" ? "취소" : "실패";
+        }
       }
     }
 
@@ -288,7 +293,7 @@
       while (running && activeSessionId) {
         const payload = await fetchJson(`${root.dataset.probeSessionsUrl}/${activeSessionId}`, {}, "TCP 측정 상태");
         renderSession(payload);
-        if (["completed", "cancelled", "failed"].includes(payload.status)) {
+        if (["completed", "cancelled", "failed"].includes(payload.status) && payload.persistence_complete !== false) {
           running = false;
           activeSessionId = "";
           setControlsEnabled();

@@ -65,6 +65,8 @@ class ProbeSession:
     error: str = ""
     job_claimed: bool = False
     completed_at_monotonic: float | None = None
+    result_available: bool = False
+    persistence_complete: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
     sockets: dict[str, dict[int, Any]] = field(default_factory=dict)
     server_results: dict[str, dict[str, Any]] = field(default_factory=dict)
