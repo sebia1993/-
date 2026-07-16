@@ -4,6 +4,7 @@ import argparse
 import csv
 import http.client
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -67,11 +68,19 @@ def write_soak_config(root: Path, web_port: int, probe_port: int) -> Path:
     return config_path
 
 
+def build_subprocess_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["PYTHONUTF8"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
+    return environment
+
+
 def start_server(config_path: Path, log_path: Path) -> subprocess.Popen[bytes]:
     with log_path.open("ab") as output:
         return subprocess.Popen(
             [sys.executable, "app.py", "--config", str(config_path)],
             cwd=PROJECT_ROOT,
+            env=build_subprocess_environment(),
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.STDOUT,
@@ -213,6 +222,7 @@ def run_tcp_self_check() -> None:
     completed = subprocess.run(
         [sys.executable, "app.py", "--probe-self-check"],
         cwd=PROJECT_ROOT,
+        env=build_subprocess_environment(),
         capture_output=True,
         text=True,
         encoding="utf-8",

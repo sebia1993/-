@@ -5,6 +5,7 @@ from pathlib import Path
 from tools.run_windows_stability_soak import (
     SOAK_UPLOAD_BYTES,
     build_multipart_upload,
+    build_subprocess_environment,
     run_soak,
     write_soak_config,
 )
@@ -45,6 +46,13 @@ def test_soak_multipart_contains_complete_file_payload():
     assert body.startswith(f"--{boundary}\r\n".encode("ascii"))
     assert body.endswith(f"\r\n--{boundary}--\r\n".encode("ascii"))
     assert content in body
+
+
+def test_soak_subprocesses_force_utf8_output():
+    environment = build_subprocess_environment()
+
+    assert environment["PYTHONUTF8"] == "1"
+    assert environment["PYTHONIOENCODING"] == "utf-8"
 
 
 def test_single_soak_cycle_runs_real_upload_tcp_and_restart():
