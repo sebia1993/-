@@ -250,6 +250,12 @@ select:disabled {
   font-size: 13px;
 }
 
+.probe-client-package .hash-text {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+}
+
 .link-box {
   margin-top: 12px;
 }

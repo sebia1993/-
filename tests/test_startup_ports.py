@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from configparser import ConfigParser
 from pathlib import Path
 
@@ -10,9 +9,7 @@ import app as app_module
 import startup_ports as ports_module
 from startup_ports import (
     CURRENT_CONFIG_VERSION,
-    FIREWALL_ALLOWED,
     FIREWALL_NOT_APPLICABLE,
-    FIREWALL_NOT_FOUND,
     FIREWALL_UNKNOWN,
     PortChangeDeclined,
     PortResolution,
@@ -318,20 +315,8 @@ def test_persist_port_change_replace_failure_keeps_original_file(tmp_path, monke
     assert list(tmp_path.glob(".config.ini.*.tmp")) == []
 
 
-@pytest.mark.parametrize(
-    ("returncode", "expected"),
-    [(0, FIREWALL_ALLOWED), (1, FIREWALL_NOT_FOUND), (2, FIREWALL_UNKNOWN)],
-)
-def test_windows_firewall_status_uses_process_exit_code(returncode, expected):
-    def fake_run(command, **kwargs):
-        assert command[0] == "powershell.exe"
-        assert "8001" in command[-1]
-        return subprocess.CompletedProcess(command, returncode)
-
-    assert (
-        check_windows_firewall_port(8001, platform="win32", run_command=fake_run)
-        == expected
-    )
+def test_windows_firewall_status_does_not_spawn_a_child_process():
+    assert check_windows_firewall_port(8001, platform="win32") == FIREWALL_UNKNOWN
 
 
 def test_windows_firewall_status_skips_non_windows():

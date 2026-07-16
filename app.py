@@ -23,7 +23,6 @@ from werkzeug.serving import make_server
 from app_version import APP_VERSION
 from network_sustained import create_sustained_blueprint, ensure_sustained_storage
 from network_measurement import NetworkMeasurementGate
-from network_probe.agent import ProbeClientError, run_probe_client
 from network_probe.models import PROBE_PROTOCOL_VERSION, ProbeConfig
 from network_probe.routes import create_probe_blueprint
 from network_probe.service import ProbeService, ensure_probe_storage
@@ -98,6 +97,109 @@ WINDOWS_RESERVED_NAMES = {
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
+BLOCKED_UPLOAD_SUFFIXES = frozenset(
+    {
+        ".appinstaller",
+        ".appref-ms",
+        ".appx",
+        ".appxbundle",
+        ".application",
+        ".apk",
+        ".bash",
+        ".bat",
+        ".chm",
+        ".cmd",
+        ".com",
+        ".cpl",
+        ".csh",
+        ".dll",
+        ".doc",
+        ".docb",
+        ".docm",
+        ".dot",
+        ".dotm",
+        ".dmg",
+        ".drv",
+        ".exe",
+        ".fish",
+        ".gadget",
+        ".hta",
+        ".img",
+        ".inf",
+        ".iso",
+        ".jar",
+        ".js",
+        ".jse",
+        ".ksh",
+        ".lnk",
+        ".lua",
+        ".mdb",
+        ".mde",
+        ".msc",
+        ".msi",
+        ".msix",
+        ".msixbundle",
+        ".msp",
+        ".msu",
+        ".ocx",
+        ".ova",
+        ".ovf",
+        ".php",
+        ".pif",
+        ".pl",
+        ".pot",
+        ".potm",
+        ".ppam",
+        ".pps",
+        ".ppsm",
+        ".ppt",
+        ".pptm",
+        ".ps1",
+        ".psd1",
+        ".psm1",
+        ".py",
+        ".pyw",
+        ".qcow",
+        ".qcow2",
+        ".rb",
+        ".reg",
+        ".scf",
+        ".scr",
+        ".sct",
+        ".sh",
+        ".sldm",
+        ".sys",
+        ".tcl",
+        ".url",
+        ".vb",
+        ".vbe",
+        ".vbs",
+        ".vhd",
+        ".vhdx",
+        ".vdi",
+        ".vmdk",
+        ".vsdm",
+        ".vssm",
+        ".vstm",
+        ".ws",
+        ".wsc",
+        ".wsf",
+        ".wsh",
+        ".xla",
+        ".xlam",
+        ".xlm",
+        ".xls",
+        ".xlsb",
+        ".xlsm",
+        ".xlt",
+        ".xltm",
+        ".xbap",
+        ".zsh",
+        ".accdb",
+        ".accde",
+        ".accdr",
+    }
+)
 _csv_lock = threading.Lock()
 _network_check_csv_lock = threading.Lock()
 
@@ -276,6 +378,23 @@ def safe_filename(filename: str | None) -> str:
         max_stem_len = max(1, 180 - len(suffix))
         safe = f"{stem[:max_stem_len]}{suffix}"
     return safe
+
+
+def blocked_upload_reason(filename: str, uploaded_file) -> str:
+    suffix = Path(filename).suffix.casefold()
+    if suffix in BLOCKED_UPLOAD_SUFFIXES:
+        return "보안상 실행파일, 스크립트, 매크로 문서와 디스크 이미지는 업로드할 수 없습니다."
+
+    stream = getattr(uploaded_file, "stream", uploaded_file)
+    try:
+        position = stream.tell()
+        header = stream.read(2)
+        stream.seek(position)
+    except (AttributeError, OSError):
+        header = b""
+    if header == b"MZ":
+        return "파일 이름과 관계없이 Windows 실행 파일 내용은 업로드할 수 없습니다."
+    return ""
 
 
 def generate_upload_id(now: datetime | None = None) -> str:
@@ -639,7 +758,7 @@ def create_app(
     app_config: AppConfig | None = None,
     probe_service: ProbeService | None = None,
     measurement_gate: NetworkMeasurementGate | None = None,
-    probe_client_executable_path: str | os.PathLike[str] | None = None,
+    probe_client_bundle_path: str | os.PathLike[str] | None = None,
 ) -> Flask:
     app = Flask(
         __name__,
@@ -668,7 +787,7 @@ def create_app(
             active_probe_service,
             web_port=config.port,
             lan_ip_resolver=detect_lan_ip,
-            client_executable_path=probe_client_executable_path,
+            client_bundle_path=probe_client_bundle_path,
         )
     )
     app.extensions["sustained_network_check"] = sustained_manager
@@ -807,6 +926,14 @@ def create_app(
             )
 
         original_filename = safe_filename(uploaded_file.filename)
+        blocked_reason = blocked_upload_reason(original_filename, uploaded_file)
+        if blocked_reason:
+            return render_index(
+                status_code=400,
+                error=blocked_reason,
+                storage_subdir=normalized_subdir,
+                memo=memo,
+            )
         try:
             reservation = reserve_upload_target(
                 storage_dir,
@@ -864,11 +991,15 @@ def create_app(
         file_path = record_file_path(row)
         if not file_path.exists() or not file_path.is_file():
             abort(404)
-        return send_file(
+        response = send_file(
             file_path,
+            mimetype="application/octet-stream",
             as_attachment=True,
             download_name=row.get("original_filename") or file_path.name,
         )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.post("/delete/<upload_id>")
     def delete(upload_id: str):
@@ -1131,7 +1262,7 @@ def print_firewall_status(port: int) -> None:
         print(f"Windows 방화벽에서 TCP {port} 인바운드 허용 규칙을 확인했습니다.")
         return
     print(
-        f"Windows 방화벽에서 TCP {port} 허용 규칙을 확인하지 못했습니다.",
+        f"Windows 방화벽은 자동 조회하지 않습니다. TCP {port} 외부 접속이 실패하면 허용 규칙을 확인하세요.",
         file=sys.stderr,
     )
     print("다른 PC에서 접속할 수 없다면 관리자 터미널에서 다음 명령을 실행하세요:")
@@ -1139,10 +1270,8 @@ def print_firewall_status(port: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="사내 업로드 서버 및 TCP 전송 성능 측정 클라이언트")
+    parser = argparse.ArgumentParser(description="사내 업로드 및 TCP 전송 성능 측정 서버")
     parser.add_argument("--smoke-check", action="store_true")
-    parser.add_argument("--probe-client", action="store_true")
-    parser.add_argument("--server", default="")
     parser.add_argument("--probe-self-check", action="store_true")
     parser.add_argument("--config", default="")
     args = parser.parse_args(argv)
@@ -1150,19 +1279,11 @@ def main(argv: list[str] | None = None) -> int:
     config_path = args.config or None
     if args.smoke_check:
         return run_smoke_check(config_path)
-    if args.probe_client:
-        if not args.server:
-            parser.error("--probe-client에는 --server 주소가 필요합니다.")
-        try:
-            return run_probe_client(args.server)
-        except ProbeClientError as exc:
-            print(f"TCP 측정 클라이언트 실행 실패: {exc}", file=sys.stderr)
-            return 2
     if args.probe_self_check:
-        from network_probe.client_package import runtime_client_executable
+        from network_probe.client_package import runtime_client_bundle
         from network_probe.self_check import run_probe_self_check
 
-        return run_probe_self_check(runtime_client_executable())
+        return run_probe_self_check(runtime_client_bundle())
 
     resolved_config_path = (
         Path(config_path).resolve() if config_path else APP_ROOT / "config.ini"

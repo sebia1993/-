@@ -2,6 +2,24 @@
 
 이 문서는 저장소에 반영된 주요 변경을 사람이 확인하기 위한 기록입니다. GitHub에 push하거나 Release를 준비하기 전에 `README.md`, `RELEASE_NOTES.md`, `CHANGELOG.md`를 함께 점검합니다.
 
+## v0.4.4-rc.1 - 2026-07-16
+
+보안 제품 오탐 완화와 검토 가능성:
+
+- Windows 배포를 자체 압축 해제형 단일 EXE에서 포터블 `onedir` 구조로 바꿨습니다.
+- 서버와 TCP 측정 클라이언트를 `InternalUploadServer.exe`, `NetworkProbeClient.exe`로 분리했습니다.
+- 서버 시작 과정의 PowerShell·`ExecutionPolicy Bypass`와 자동 방화벽 조회를 제거했습니다.
+- 실행파일, 스크립트, 설치 패키지, 매크로 문서, 디스크 이미지와 확장자를 바꾼 Windows PE 업로드를 차단합니다.
+- 다운로드에 첨부파일, `application/octet-stream`, `no-store`, `nosniff` 헤더를 적용합니다.
+- 실행파일 역할·버전 정보, 파일별 SHA256, 보안 검토 문서와 CycloneDX SBOM을 배포 ZIP에 포함합니다.
+- Windows 빌드 의존성과 GitHub Actions 버전을 고정하고 기존 릴리즈 태그를 덮어쓰지 않습니다.
+
+호환성과 제한:
+
+- TCP 프로토콜 `v2`, 측정 엔진·계산식, HTTP 측정, CSV·JSON·Excel 형식은 변경하지 않습니다.
+- 코드서명 미적용, 무인증 사내망 접근, 파일 크기 무제한, 압축파일 내부 미검사와 TCP 장기 폴링은 유지됩니다.
+- 기존 릴리즈 파일은 삭제하거나 덮어쓰지 않습니다.
+
 ## v0.4.3-rc.2 - 2026-07-15
 
 측정 그래프:

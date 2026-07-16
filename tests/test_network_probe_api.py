@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import json
+import hashlib
 import socket
 import uuid
 from zipfile import ZipFile
@@ -130,7 +132,7 @@ def test_probe_api_registers_agent_and_shares_measurement_gate(tmp_path):
         assert status["server_version"] == APP_VERSION
         assert status["protocol_version"] == PROBE_PROTOCOL_VERSION
         assert status["client_package_available"] is False
-        assert "Release EXE" in status["client_package_error"]
+        assert "Release 폴더" in status["client_package_error"]
 
         created = client.post(
             "/api/network-probe/sessions",
@@ -219,15 +221,19 @@ def test_probe_client_package_download_embeds_current_server_address(tmp_path):
         measurement_gate=gate,
         normalize_ip=normalize_ip,
     )
-    executable = tmp_path / "InternalUpload.exe"
+    bundle = tmp_path / "client-template"
+    bundle.mkdir()
+    executable = bundle / "NetworkProbeClient.exe"
     executable.write_bytes(b"MZ-api-client-test")
+    (bundle / "_internal").mkdir()
+    (bundle / "_internal" / "runtime.dll").write_bytes(b"runtime")
     assert service.start() is True
     try:
         app = create_app(
             config_path,
             probe_service=service,
             measurement_gate=gate,
-            probe_client_executable_path=executable,
+            probe_client_bundle_path=bundle,
         )
         client = app.test_client()
         headers = {"Host": "SERVER-PC:8123"}
@@ -238,17 +244,22 @@ def test_probe_client_package_download_embeds_current_server_address(tmp_path):
         status_payload = status.get_json()
         assert status_payload["client_package_available"] is True
         assert status_payload["client_package_server_url"] == "http://server-pc:8123"
+        expected_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
+        assert status_payload["client_executable_sha256"] == expected_hash
         assert status_payload["client_package_url"] == "/api/network-probe/client-package.zip"
         assert package.status_code == 200
         assert package.mimetype == "application/zip"
         assert package.headers["Cache-Control"] == "no-store"
         assert "internal-upload-client_server-pc.zip" in package.headers["Content-Disposition"]
+        assert package.headers["X-Client-Executable-SHA256"] == expected_hash
         with ZipFile(io.BytesIO(package.data)) as archive:
-            command = archive.read(
-                "InternalUpload_Client_server-pc/start_tcp_probe_client.cmd"
-            ).decode("utf-8-sig")
-        assert '--server "http://server-pc:8123"' in command
-        assert "set /p" not in command.lower()
+            config = json.loads(
+                archive.read("InternalUpload_Client_server-pc/client-config.json").decode("utf-8")
+            )
+            names = archive.namelist()
+        assert config["server_url"] == "http://server-pc:8123"
+        assert not any(name.lower().endswith(".cmd") for name in names)
+        assert not any(name.lower().endswith("internaluploadserver.exe") for name in names)
 
         rejected = client.get(
             "/api/network-probe/client-package.zip",
@@ -259,7 +270,7 @@ def test_probe_client_package_download_embeds_current_server_address(tmp_path):
         service.stop()
 
 
-def test_probe_client_package_rejects_missing_executable(tmp_path):
+def test_probe_client_package_rejects_missing_bundle(tmp_path):
     config_path = write_config(tmp_path, enabled=True)
     app_config = load_config(config_path)
     gate = NetworkMeasurementGate()
@@ -274,13 +285,13 @@ def test_probe_client_package_rejects_missing_executable(tmp_path):
             config_path,
             probe_service=service,
             measurement_gate=gate,
-            probe_client_executable_path=tmp_path / "missing.exe",
+            probe_client_bundle_path=tmp_path / "missing",
         )
         response = app.test_client().get(
             "/api/network-probe/client-package.zip",
             headers={"Host": "server-pc:8000"},
         )
         assert response.status_code == 503
-        assert "실행 파일" in response.get_json()["error"]
+        assert "프로그램 폴더" in response.get_json()["error"]
     finally:
         service.stop()

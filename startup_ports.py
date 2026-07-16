@@ -4,7 +4,6 @@ import http.client
 import json
 import os
 import socket
-import subprocess
 import sys
 import tempfile
 from configparser import ConfigParser, SectionProxy
@@ -430,58 +429,12 @@ def check_windows_firewall_port(
     port: int,
     *,
     platform: str | None = None,
-    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> str:
     active_platform = platform or sys.platform
     if active_platform != "win32":
         return FIREWALL_NOT_APPLICABLE
-
-    script = rf"""
-$ErrorActionPreference = 'Stop'
-function Test-LocalPort([string]$spec, [int]$target) {{
-    foreach ($part in ($spec -split ',')) {{
-        $value = $part.Trim()
-        if ($value -eq 'Any' -or $value -eq '*') {{ return $true }}
-        if ($value -match '^(\d+)-(\d+)$') {{
-            if ($target -ge [int]$Matches[1] -and $target -le [int]$Matches[2]) {{ return $true }}
-        }} elseif ($value -match '^\d+$' -and [int]$value -eq $target) {{
-            return $true
-        }}
-    }}
-    return $false
-}}
-try {{
-    $filters = Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow |
-        Get-NetFirewallPortFilter
-    foreach ($filter in $filters) {{
-        if (($filter.Protocol -eq 'TCP' -or $filter.Protocol -eq '6') -and
-            (Test-LocalPort ([string]$filter.LocalPort) {port})) {{ exit 0 }}
-    }}
-    exit 1
-}} catch {{ exit 2 }}
-""".strip()
-    try:
-        completed = run_command(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+    if not 1 <= port <= 65535:
         return FIREWALL_UNKNOWN
-    if completed.returncode == 0:
-        return FIREWALL_ALLOWED
-    if completed.returncode == 1:
-        return FIREWALL_NOT_FOUND
     return FIREWALL_UNKNOWN
 
 

@@ -44,6 +44,7 @@ This is not a general-purpose file transfer service. Keep the scope small.
 - `result_storage.py`: durable temporary-file, fsync, and atomic JSON result writes.
 - `network_probe/`: TCP protocol, agent, server, statistics, Windows telemetry,
   generated client ZIP, Excel reporting, Flask API, and loopback self-check.
+- `probe_client.py`: the dedicated Windows TCP measurement client entrypoint.
 - `templates/` and `static/`: the single-page upload UI and network check mode.
 - `tests/`: deterministic tests for upload, download, deletion, paths, links,
   and CSV behavior.
@@ -58,7 +59,9 @@ This is not a general-purpose file transfer service. Keep the scope small.
 - `data/network_probe_log.csv`: tracked TCP probe CSV header only.
 - `data/network_probe_results/`: tracked README only; operational TCP result
   JSON files must remain untracked.
-- `tools/`: Windows Release ZIP build and verification helpers.
+- `requirements-windows.lock`: hash-pinned Windows release build dependencies.
+- `tools/`: Windows Release ZIP build, security artifact, version resource, and
+  verification helpers.
 - `.github/workflows/release.yml`: Windows runner workflow that builds and
   uploads the executable ZIP asset.
 
@@ -68,14 +71,18 @@ Use the narrowest relevant check while developing, then run the full baseline
 before calling work complete.
 
 ```powershell
-python -m compileall app_version.py app.py startup_ports.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
+python -m compileall app_version.py app.py probe_client.py startup_ports.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
+node --check static/network_check.js
+node --check static/network_sustained.js
+node --check static/network_probe.js
+node --check static/throughput_chart.js
 python -m pytest -q
 ```
 
 On macOS in this workspace, use:
 
 ```bash
-.venv/bin/python -m compileall app_version.py app.py startup_ports.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
+.venv/bin/python -m compileall app_version.py app.py probe_client.py startup_ports.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
 .venv/bin/python -m pytest -q
 ```
 
@@ -109,3 +116,10 @@ On macOS in this workspace, use:
 - Do not commit uploaded files or populated CSV records.
 - Keep deletion behavior restricted by configured allowed IPs unless the user
   explicitly changes that policy.
+- Keep server and TCP client entrypoints separate in Windows releases.
+- Do not add automatic firewall changes, PowerShell launch helpers, persistence,
+  privilege elevation, or uploaded-file execution.
+- Keep direct executable, script, macro-document, and disk-image uploads blocked.
+- Preserve release security artifacts and clearly document the residual risks:
+  unsigned binaries, unauthenticated intranet access, unlimited file size,
+  uninspected archive contents, and the TCP client's long polling.

@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import ipaddress
+import json
 import re
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
-from zipfile import ZIP_STORED, ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from app_version import APP_VERSION
 
 
 HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 NUMERIC_ADDRESS_RE = re.compile(r"^[0-9.]+$")
+CLIENT_EXECUTABLE_NAME = "NetworkProbeClient.exe"
+CLIENT_CONFIG_NAME = "client-config.json"
+CLIENT_MANIFEST_NAME = "client-manifest.json"
+CLIENT_README_NAME = "README_CLIENT_KO.txt"
 
 
 class ClientPackageError(ValueError):
@@ -26,15 +32,13 @@ class ClientPackage:
     server_url: str
     download_name: str
     root_name: str
+    client_executable_sha256: str
 
 
-def runtime_client_executable() -> Path | None:
+def runtime_client_bundle() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
-    path = Path(sys.executable).resolve()
-    if path.suffix.lower() != ".exe":
-        return None
-    return path
+    return Path(sys.executable).resolve().parent / "client-template"
 
 
 def _normalize_host(value: str) -> tuple[str, ipaddress.IPv4Address | None]:
@@ -124,38 +128,21 @@ def _validated_server_host(server_url: str) -> str:
     return host
 
 
-def _client_command(server_url: str) -> bytes:
-    text = "\r\n".join(
-        [
-            "@echo off",
-            "chcp 65001 >nul",
-            'cd /d "%~dp0"',
-            f"echo TCP 전송 성능 측정 클라이언트 {APP_VERSION}를 시작합니다.",
-            f"echo 서버: {server_url}",
-            "echo 이 창을 닫지 마세요. 종료하려면 Ctrl+C를 누르세요.",
-            "echo.",
-            f'InternalUpload.exe --probe-client --server "{server_url}"',
-            'set "EXIT_CODE=%ERRORLEVEL%"',
-            "echo.",
-            'if not "%EXIT_CODE%"=="0" echo TCP 측정 클라이언트가 오류로 종료되었습니다.',
-            "pause",
-            "exit /b %EXIT_CODE%",
-            "",
-        ]
-    )
-    return text.encode("utf-8-sig")
+def _json_bytes(value: dict[str, object]) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
-def _client_readme(server_url: str) -> bytes:
+def _client_readme(server_url: str, executable_sha256: str) -> bytes:
     text = "\r\n".join(
         [
             "사내 업로드 TCP 전송 성능 측정 Windows 클라이언트",
             "",
             f"클라이언트 버전: {APP_VERSION}",
             f"자동 설정된 서버 주소: {server_url}",
+            f"클라이언트 EXE SHA256: {executable_sha256}",
             "",
             "1. ZIP 파일을 원하는 폴더에 완전히 압축 해제합니다.",
-            "2. start_tcp_probe_client.cmd를 더블클릭합니다.",
+            f"2. {CLIENT_EXECUTABLE_NAME}를 더블클릭합니다.",
             "3. 콘솔 창을 열어 둔 상태에서 서버 웹 화면의 TCP 전송 성능 측정을 실행합니다.",
             "4. 종료할 때는 콘솔 창에서 Ctrl+C를 누릅니다.",
             "",
@@ -163,55 +150,211 @@ def _client_readme(server_url: str) -> bytes:
             "서버 PC의 IP 또는 웹 포트가 바뀌면 서버 웹 화면에서 ZIP을 다시 받으세요.",
             "TCP 측정 포트는 서버가 자동으로 전달하므로 포트만 바뀐 경우에는 다시 받을 필요가 없습니다.",
             "클라이언트 PC의 인바운드 방화벽 포트는 열 필요가 없습니다.",
-            "코드서명하지 않은 EXE이므로 Windows SmartScreen 경고가 표시될 수 있습니다.",
+            "이 클라이언트에는 파일 업로드 서버 기능이 포함되어 있지 않습니다.",
+            "코드서명은 적용하지 않았습니다. EXE 해시와 client-manifest.json을 확인하세요.",
             "",
         ]
     )
     return text.encode("utf-8-sig")
 
 
+def _bundle_files(bundle_path: Path) -> list[tuple[Path, Path]]:
+    if not bundle_path.is_dir():
+        raise ClientPackageError("Windows 클라이언트 프로그램 폴더를 찾을 수 없습니다.")
+    executable = bundle_path / CLIENT_EXECUTABLE_NAME
+    if not executable.is_file():
+        raise ClientPackageError(f"Windows 클라이언트 실행 파일을 찾을 수 없습니다: {CLIENT_EXECUTABLE_NAME}")
+
+    files: list[tuple[Path, Path]] = []
+    for path in sorted(bundle_path.rglob("*")):
+        if path.is_symlink():
+            raise ClientPackageError("클라이언트 프로그램 폴더에는 심볼릭 링크를 포함할 수 없습니다.")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(bundle_path)
+        lowered = relative.as_posix().lower()
+        if relative.name in {CLIENT_CONFIG_NAME, CLIENT_MANIFEST_NAME, CLIENT_README_NAME}:
+            raise ClientPackageError(f"클라이언트 프로그램 폴더에 예약 파일이 있습니다: {relative.name}")
+        if lowered.endswith(".cmd") or lowered.endswith("config.ini"):
+            raise ClientPackageError(f"클라이언트 프로그램 폴더에 허용되지 않는 파일이 있습니다: {relative}")
+        if relative.name.casefold() == "internaluploadserver.exe".casefold():
+            raise ClientPackageError("클라이언트 프로그램 폴더에 서버 실행 파일이 포함되어 있습니다.")
+        if relative.suffix.casefold() == ".exe" and relative.as_posix() != CLIENT_EXECUTABLE_NAME:
+            raise ClientPackageError(f"클라이언트 프로그램 폴더에 추가 실행 파일이 있습니다: {relative}")
+        if relative.as_posix() != CLIENT_EXECUTABLE_NAME and relative.parts[0] != "_internal":
+            raise ClientPackageError(f"클라이언트 프로그램 폴더에 예상하지 않은 파일이 있습니다: {relative}")
+        files.append((path, relative))
+    return files
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _manifest_entry(path: str, payload: bytes) -> dict[str, object]:
+    return {"path": path, "size": len(payload), "sha256": _sha256_bytes(payload)}
+
+
+def client_executable_sha256(bundle_path: Path) -> str:
+    _bundle_files(bundle_path)
+    return _sha256_file(bundle_path / CLIENT_EXECUTABLE_NAME)
+
+
 def verify_client_package(payload: bytes, server_url: str) -> list[str]:
     errors: list[str] = []
     host = _validated_server_host(server_url)
     root_name = f"InternalUpload_Client_{host}"
-    expected = {
-        f"{root_name}/InternalUpload.exe",
-        f"{root_name}/start_tcp_probe_client.cmd",
-        f"{root_name}/README_CLIENT_KO.txt",
+    prefix = f"{root_name}/"
+    required = {
+        f"{prefix}{CLIENT_EXECUTABLE_NAME}",
+        f"{prefix}{CLIENT_CONFIG_NAME}",
+        f"{prefix}{CLIENT_MANIFEST_NAME}",
+        f"{prefix}{CLIENT_README_NAME}",
     }
     try:
         with ZipFile(io.BytesIO(payload)) as archive:
-            names = set(archive.namelist())
-            if names != expected:
-                errors.append("클라이언트 ZIP 파일 구성이 올바르지 않습니다.")
-            command_name = f"{root_name}/start_tcp_probe_client.cmd"
-            readme_name = f"{root_name}/README_CLIENT_KO.txt"
-            if command_name in names:
-                command = archive.read(command_name).decode("utf-8-sig")
-                if server_url not in command or "--probe-client --server" not in command:
-                    errors.append("클라이언트 실행 명령에 서버 주소가 없습니다.")
-                if "set /p" in command.lower():
-                    errors.append("클라이언트 실행 명령에 주소 입력 프롬프트가 남아 있습니다.")
+            file_names = [name for name in archive.namelist() if not name.endswith("/")]
+            names = set(file_names)
+            if len(file_names) != len(names):
+                errors.append("클라이언트 ZIP에 중복 파일 이름이 있습니다.")
+            if not required.issubset(names):
+                errors.append("클라이언트 ZIP 필수 파일 구성이 올바르지 않습니다.")
+            if any(not name.startswith(prefix) for name in names):
+                errors.append("클라이언트 ZIP 루트 폴더 구성이 올바르지 않습니다.")
+            lowered_names = {name.lower() for name in names}
+            if any(name.endswith(".cmd") for name in lowered_names):
+                errors.append("클라이언트 ZIP에 CMD 실행 파일이 포함되어 있습니다.")
+            if any(name.endswith("config.ini") for name in lowered_names):
+                errors.append("클라이언트 ZIP에 서버 config.ini가 포함되어 있습니다.")
+            if any(name.endswith("internaluploadserver.exe") for name in lowered_names):
+                errors.append("클라이언트 ZIP에 서버 실행 파일이 포함되어 있습니다.")
+
+            config_name = f"{prefix}{CLIENT_CONFIG_NAME}"
+            manifest_name = f"{prefix}{CLIENT_MANIFEST_NAME}"
+            executable_name = f"{prefix}{CLIENT_EXECUTABLE_NAME}"
+            readme_name = f"{prefix}{CLIENT_README_NAME}"
+            if config_name in names:
+                config = json.loads(archive.read(config_name).decode("utf-8"))
+                if not isinstance(config, dict) or config != {
+                    "schema_version": 1,
+                    "server_url": server_url,
+                    "client_version": APP_VERSION,
+                }:
+                    errors.append("클라이언트 자동 연결 설정이 올바르지 않습니다.")
+                if any(key in config for key in ("token", "agent_token", "session_token")):
+                    errors.append("클라이언트 자동 연결 설정에 인증 정보가 포함되어 있습니다.")
+            if manifest_name in names and executable_name in names:
+                manifest = json.loads(archive.read(manifest_name).decode("utf-8"))
+                actual_hash = hashlib.sha256(archive.read(executable_name)).hexdigest()
+                if not isinstance(manifest, dict):
+                    errors.append("클라이언트 매니페스트 형식이 올바르지 않습니다.")
+                    manifest = {}
+                if manifest.get("executable_sha256") != actual_hash:
+                    errors.append("클라이언트 실행 파일 SHA256이 매니페스트와 다릅니다.")
+                if manifest.get("executable") != CLIENT_EXECUTABLE_NAME or manifest.get("version") != APP_VERSION:
+                    errors.append("클라이언트 매니페스트 정보가 올바르지 않습니다.")
+                manifest_files = manifest.get("files")
+                manifest_by_path: dict[str, dict[str, object]] = {}
+                if not isinstance(manifest_files, list):
+                    errors.append("클라이언트 매니페스트 파일 목록이 없습니다.")
+                else:
+                    for item in manifest_files:
+                        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                            errors.append("클라이언트 매니페스트 파일 항목이 올바르지 않습니다.")
+                            continue
+                        relative = str(item["path"])
+                        parsed = PurePosixPath(relative)
+                        if parsed.is_absolute() or ".." in parsed.parts or "\\" in relative:
+                            errors.append("클라이언트 매니페스트 파일 경로가 안전하지 않습니다.")
+                            continue
+                        if relative in manifest_by_path:
+                            errors.append("클라이언트 매니페스트에 중복 파일 경로가 있습니다.")
+                            continue
+                        manifest_by_path[relative] = item
+
+                    expected_relative = {
+                        name[len(prefix):]
+                        for name in names
+                        if name != manifest_name
+                    }
+                    if set(manifest_by_path) != expected_relative:
+                        errors.append("클라이언트 매니페스트 파일 목록이 ZIP과 다릅니다.")
+                    for relative, item in manifest_by_path.items():
+                        archive_name = f"{prefix}{relative}"
+                        if archive_name not in names:
+                            continue
+                        content = archive.read(archive_name)
+                        if item.get("size") != len(content) or item.get("sha256") != _sha256_bytes(content):
+                            errors.append(f"클라이언트 파일 해시가 일치하지 않습니다: {relative}")
             if readme_name in names and server_url not in archive.read(readme_name).decode("utf-8-sig"):
                 errors.append("클라이언트 안내문에 서버 주소가 없습니다.")
-            if any(name.lower().endswith("config.ini") for name in names):
-                errors.append("클라이언트 ZIP에 config.ini가 포함되어 있습니다.")
-    except (OSError, ValueError) as exc:
+    except (OSError, TypeError, ValueError, KeyError, AttributeError) as exc:
         errors.append(f"클라이언트 ZIP을 확인할 수 없습니다: {exc}")
     return errors
 
 
-def build_client_package(executable_path: Path, server_url: str) -> ClientPackage:
+def build_client_package(bundle_path: Path, server_url: str) -> ClientPackage:
     host = _validated_server_host(server_url)
-    if not executable_path.is_file():
-        raise ClientPackageError("Windows 클라이언트 실행 파일을 찾을 수 없습니다.")
+    files = _bundle_files(bundle_path)
+    executable_sha256 = client_executable_sha256(bundle_path)
     root_name = f"InternalUpload_Client_{host}"
+    config_payload = _json_bytes(
+        {
+            "schema_version": 1,
+            "server_url": server_url,
+            "client_version": APP_VERSION,
+        }
+    )
+    readme_payload = _client_readme(server_url, executable_sha256)
+    manifest_files = [
+        {
+            "path": relative.as_posix(),
+            "size": source.stat().st_size,
+            "sha256": _sha256_file(source),
+        }
+        for source, relative in files
+    ]
+    manifest_files.extend(
+        [
+            _manifest_entry(CLIENT_CONFIG_NAME, config_payload),
+            _manifest_entry(CLIENT_README_NAME, readme_payload),
+        ]
+    )
+    manifest_payload = _json_bytes(
+        {
+            "schema_version": 1,
+            "product": "NetworkProbeClient",
+            "version": APP_VERSION,
+            "executable": CLIENT_EXECUTABLE_NAME,
+            "executable_sha256": executable_sha256,
+            "files": manifest_files,
+        }
+    )
     output = io.BytesIO()
     try:
-        with ZipFile(output, mode="w", compression=ZIP_STORED, allowZip64=True) as archive:
-            archive.write(executable_path, f"{root_name}/InternalUpload.exe")
-            archive.writestr(f"{root_name}/start_tcp_probe_client.cmd", _client_command(server_url))
-            archive.writestr(f"{root_name}/README_CLIENT_KO.txt", _client_readme(server_url))
+        with ZipFile(output, mode="w", compression=ZIP_DEFLATED, allowZip64=True) as archive:
+            for source, relative in files:
+                archive.write(source, f"{root_name}/{relative.as_posix()}")
+            archive.writestr(
+                f"{root_name}/{CLIENT_CONFIG_NAME}",
+                config_payload,
+            )
+            archive.writestr(
+                f"{root_name}/{CLIENT_MANIFEST_NAME}",
+                manifest_payload,
+            )
+            archive.writestr(
+                f"{root_name}/{CLIENT_README_NAME}",
+                readme_payload,
+            )
     except OSError as exc:
         raise ClientPackageError(f"Windows 클라이언트 ZIP 생성에 실패했습니다: {exc}") from exc
 
@@ -224,4 +367,5 @@ def build_client_package(executable_path: Path, server_url: str) -> ClientPackag
         server_url=server_url,
         download_name=f"internal-upload-client_{host}.zip",
         root_name=root_name,
+        client_executable_sha256=executable_sha256,
     )

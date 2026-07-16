@@ -27,6 +27,7 @@ from network_measurement import NetworkMeasurementGate
 from network_probe.models import PROBE_PROTOCOL_VERSION
 from network_probe.service import PROBE_LOG_FIELDS
 from tools.verify_release_zip import REQUIRED_FILES, verify_zip
+from tools.generate_security_artifacts import generate_security_artifacts
 
 
 def write_config(tmp_path: Path, *, base_url: str = "http://files.local:8000") -> Path:
@@ -111,6 +112,55 @@ def test_upload_saves_file_and_csv(app_client):
     assert row["storage_subdir"] == "case-001"
     assert row["memo"] == "장애 로그"
     assert Path(row["storage_path"]).read_bytes() == b"hello"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "tool.EXE",
+        "installer.msi",
+        "report.pdf.cmd",
+        "script.ps1",
+        "script.py",
+        "script.sh",
+        "macro.docm",
+        "macro.xlsb",
+        "legacy.xls",
+        "shortcut.lnk",
+        "disk.iso",
+        "disk.vmdk",
+        "android.apk",
+    ],
+)
+def test_upload_rejects_executable_and_active_content_extensions(app_client, filename):
+    client, config, _ = app_client
+
+    response = post_file(client, filename=filename, content=b"blocked")
+
+    assert response.status_code == 400
+    assert "업로드할 수 없습니다" in response.get_data(as_text=True)
+    assert read_upload_log(config) == []
+    assert list(config.storage_root.iterdir()) == []
+
+
+def test_upload_rejects_renamed_windows_pe_file(app_client):
+    client, config, _ = app_client
+
+    response = post_file(client, filename="report.txt", content=b"MZ" + b"payload")
+
+    assert response.status_code == 400
+    assert "Windows 실행 파일 내용" in response.get_data(as_text=True)
+    assert read_upload_log(config) == []
+
+
+@pytest.mark.parametrize("filename", ["trace.pcapng", "report.docx", "logs.zip", "capture.evtx"])
+def test_upload_allows_business_diagnostic_and_archive_files(app_client, filename):
+    client, config, _ = app_client
+
+    response = post_file(client, filename=filename, content=b"allowed")
+
+    assert response.status_code == 200
+    assert read_upload_log(config)[0]["original_filename"] == filename
 
 
 def test_upload_fsyncs_temporary_file_before_atomic_replace(app_client, monkeypatch):
@@ -356,6 +406,9 @@ def test_download_by_id(app_client):
 
     assert response.status_code == 200
     assert response.data == b"download me"
+    assert response.mimetype == "application/octet-stream"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
 
 
 def test_delete_requires_allowed_ip(app_client):
@@ -786,6 +839,8 @@ def test_health_endpoint_identifies_app_and_active_port(app_client):
 
 def test_release_zip_verifier_accepts_expected_structure(tmp_path):
     zip_path = tmp_path / "internal-upload_v0.1.0_windows.zip"
+    package_root = tmp_path / "package"
+    package_root.mkdir()
     csv_header = (
         "upload_id,uploaded_at,original_filename,stored_filename,storage_subdir,"
         "storage_path,memo,download_url\n"
@@ -793,40 +848,77 @@ def test_release_zip_verifier_accepts_expected_structure(tmp_path):
     network_csv_header = ",".join(NETWORK_CHECK_FIELDS) + "\n"
     session_csv_header = ",".join(SUSTAINED_LOG_FIELDS) + "\n"
     probe_csv_header = ",".join(PROBE_LOG_FIELDS) + "\n"
+    generated = {"SECURITY_REVIEW_KO.md", "security_manifest.json", "sbom.cdx.json", "SHA256SUMS.txt"}
+    special = {
+        "README_START_HERE_KO.txt",
+        "start_internal_upload.cmd",
+        "config.ini",
+        "data/upload_log.csv",
+        "data/network_check_log.csv",
+        "data/network_check_session_log.csv",
+        "data/network_probe_log.csv",
+    }
+    for name in sorted(REQUIRED_FILES - generated - special):
+        path = package_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("sample", encoding="utf-8")
+    (package_root / "InternalUploadServer.exe").write_bytes(b"MZ-server")
+    (package_root / "client-template/NetworkProbeClient.exe").write_bytes(b"MZ-client")
+    (package_root / "_internal").mkdir()
+    (package_root / "_internal/runtime.dll").write_bytes(b"server-runtime")
+    (package_root / "client-template/_internal").mkdir()
+    (package_root / "client-template/_internal/runtime.dll").write_bytes(b"client-runtime")
+    (package_root / "README_START_HERE_KO.txt").write_text(
+        "사내 업로드 v0.1.0 Windows 실행 ZIP", encoding="utf-8"
+    )
+    (package_root / "start_internal_upload.cmd").write_text(
+        "실제 접속 주소를 표시하고 config.ini에 저장합니다.\nInternalUploadServer.exe",
+        encoding="utf-8",
+    )
+    (package_root / "config.ini").write_text(
+        "[app]\nCONFIG_VERSION=2\n\n[network_probe]\nENABLED=true\nPORT=5201\n",
+        encoding="utf-8",
+    )
+    for name, content in (
+        ("data/upload_log.csv", csv_header),
+        ("data/network_check_log.csv", network_csv_header),
+        ("data/network_check_session_log.csv", session_csv_header),
+        ("data/network_probe_log.csv", probe_csv_header),
+    ):
+        path = package_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    generate_security_artifacts(package_root, version="v0.1.0", source_commit="a" * 40)
     with ZipFile(zip_path, "w") as archive:
-        for name in sorted(
-            REQUIRED_FILES
-            - {
-                "README_START_HERE_KO.txt",
-                "start_internal_upload.cmd",
-                "start_tcp_probe_client.cmd",
-                "config.ini",
-                "data/upload_log.csv",
-                "data/network_check_log.csv",
-                "data/network_check_session_log.csv",
-                "data/network_probe_log.csv",
-            }
-        ):
-            archive.writestr(name, "sample")
-        archive.writestr("README_START_HERE_KO.txt", "사내 업로드 v0.1.0 Windows 실행 ZIP")
-        archive.writestr(
-            "start_internal_upload.cmd",
-            "실제 접속 주소를 표시하고 config.ini에 저장합니다.\nInternalUpload.exe",
-        )
-        archive.writestr(
-            "start_tcp_probe_client.cmd",
-            'set /p "SERVER_URL=server: "\nInternalUpload.exe --probe-client --server "%SERVER_URL%"',
-        )
-        archive.writestr(
-            "config.ini",
-            "[app]\nCONFIG_VERSION=2\n\n[network_probe]\nENABLED=true\nPORT=5201\n",
-        )
-        archive.writestr("data/upload_log.csv", csv_header)
-        archive.writestr("data/network_check_log.csv", network_csv_header)
-        archive.writestr("data/network_check_session_log.csv", session_csv_header)
-        archive.writestr("data/network_probe_log.csv", probe_csv_header)
+        for path in package_root.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(package_root).as_posix())
 
     assert verify_zip(str(zip_path), "v0.1.0") == []
+
+    tampered_path = tmp_path / "tampered.zip"
+    with ZipFile(zip_path) as original, ZipFile(tampered_path, "w") as tampered:
+        for item in original.infolist():
+            content = original.read(item.filename)
+            if item.filename == "_internal/runtime.dll":
+                content = b"tampered-runtime"
+            tampered.writestr(item, content)
+
+    errors = verify_zip(str(tampered_path), "v0.1.0")
+    assert any("security manifest hash mismatch: _internal/runtime.dll" in error for error in errors)
+    assert any("SHA256SUMS.txt hash mismatch: _internal/runtime.dll" in error for error in errors)
+
+
+def test_release_zip_verifier_rejects_unsafe_and_duplicate_windows_paths(tmp_path):
+    zip_path = tmp_path / "unsafe.zip"
+    with ZipFile(zip_path, "w") as archive:
+        archive.writestr("../outside.txt", "bad")
+        archive.writestr("Folder/File.txt", "one")
+        archive.writestr("folder/file.TXT", "two")
+
+    errors = verify_zip(str(zip_path))
+    assert any("unsafe path" in error for error in errors)
+    assert any("duplicate Windows path" in error for error in errors)
 
 
 def test_release_zip_verifier_rejects_dev_artifacts(tmp_path):

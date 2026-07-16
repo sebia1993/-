@@ -10,8 +10,9 @@ from flask import Blueprint, Response, jsonify, request, send_file, url_for
 from .client_package import (
     ClientPackageError,
     build_client_package,
+    client_executable_sha256,
     resolve_client_server_url,
-    runtime_client_executable,
+    runtime_client_bundle,
 )
 from .excel import (
     EXCEL_MIME_TYPE,
@@ -31,18 +32,26 @@ def create_probe_blueprint(
     *,
     web_port: int = 8000,
     lan_ip_resolver: Callable[[], str] = _default_lan_ip,
-    client_executable_path: str | Path | None = None,
+    client_bundle_path: str | Path | None = None,
 ) -> Blueprint:
     blueprint = Blueprint("network_probe", __name__, url_prefix="/api/network-probe")
     package_lock = threading.Lock()
-    executable_path = (
-        Path(client_executable_path).resolve()
-        if client_executable_path is not None
-        else runtime_client_executable()
+    cached_client_hash: str | None = None
+    bundle_path = (
+        Path(client_bundle_path).resolve()
+        if client_bundle_path is not None
+        else runtime_client_bundle()
     )
 
     def client_ip() -> str:
         return service.normalize_ip(request.remote_addr)
+
+    def package_client_hash(package_bundle: Path) -> str:
+        nonlocal cached_client_hash
+        with package_lock:
+            if cached_client_hash is None:
+                cached_client_hash = client_executable_sha256(package_bundle)
+            return cached_client_hash
 
     def bearer_token() -> str:
         header = request.headers.get("Authorization", "")
@@ -66,10 +75,10 @@ def create_probe_blueprint(
                 str(status_value.get("error") or "TCP 전송 성능 측정 서버를 사용할 수 없습니다."),
                 503,
             )
-        if executable_path is None:
-            raise ProbeServiceError("Windows Release EXE로 실행할 때만 클라이언트 ZIP을 받을 수 있습니다.", 503)
-        if not executable_path.is_file():
-            raise ProbeServiceError("Windows 클라이언트 실행 파일을 찾을 수 없습니다.", 503)
+        if bundle_path is None:
+            raise ProbeServiceError("Windows Release 폴더로 실행할 때만 클라이언트 ZIP을 받을 수 있습니다.", 503)
+        if not bundle_path.is_dir():
+            raise ProbeServiceError("Windows 클라이언트 프로그램 폴더를 찾을 수 없습니다.", 503)
         try:
             server_url = resolve_client_server_url(
                 request.host,
@@ -79,7 +88,7 @@ def create_probe_blueprint(
             )
         except ClientPackageError as exc:
             raise ProbeServiceError(str(exc), 400) from exc
-        return executable_path, server_url
+        return bundle_path, server_url
 
     @blueprint.get("/status")
     def status():
@@ -89,13 +98,17 @@ def create_probe_blueprint(
                 "client_package_available": False,
                 "client_package_error": "",
                 "client_package_server_url": "",
+                "client_executable_sha256": "",
                 "client_package_url": url_for("network_probe.client_package"),
             }
         )
         try:
-            _, server_url = package_context()
+            package_bundle, server_url = package_context()
             value["client_package_available"] = True
             value["client_package_server_url"] = server_url
+            value["client_executable_sha256"] = package_client_hash(package_bundle)
+        except ClientPackageError as exc:
+            value["client_package_error"] = str(exc)
         except ProbeServiceError as exc:
             value["client_package_error"] = str(exc)
         return jsonify(value)
@@ -103,9 +116,9 @@ def create_probe_blueprint(
     @blueprint.get("/client-package.zip")
     def client_package():
         try:
-            package_executable, server_url = package_context()
+            package_bundle, server_url = package_context()
             with package_lock:
-                package = build_client_package(package_executable, server_url)
+                package = build_client_package(package_bundle, server_url)
         except ProbeServiceError as exc:
             return error_response(exc)
         except ClientPackageError as exc:
@@ -120,6 +133,7 @@ def create_probe_blueprint(
         )
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Client-Executable-SHA256"] = package.client_executable_sha256
         return response
 
     @blueprint.get("/agents")

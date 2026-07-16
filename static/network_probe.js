@@ -153,6 +153,7 @@
     const serviceStatus = root.querySelector("[data-probe-service-status]");
     const packageLink = root.querySelector("[data-probe-client-package]");
     const packageAddress = root.querySelector("[data-probe-client-package-address]");
+    const packageHash = root.querySelector("[data-probe-client-package-hash]");
     const agentSelect = root.querySelector("[data-probe-agent]");
     const clientReadiness = root.querySelector("[data-probe-client-readiness]");
     const durationSelect = root.querySelector("[data-probe-duration]");
@@ -317,9 +318,14 @@
       if (packageAvailable) {
         packageLink.href = payload.client_package_url || root.dataset.probeClientPackageUrl;
         packageAddress.textContent = `자동 연결 주소 · ${payload.client_package_server_url}`;
+        const executableHash = payload.client_executable_sha256 || "";
+        packageHash.hidden = !executableHash;
+        packageHash.textContent = executableHash ? `클라이언트 EXE SHA256 · ${executableHash}` : "";
       } else {
         packageLink.removeAttribute("href");
         packageAddress.textContent = payload.client_package_error || "Windows 클라이언트 ZIP을 사용할 수 없습니다.";
+        packageHash.hidden = true;
+        packageHash.textContent = "";
       }
       setControlsEnabled();
     }

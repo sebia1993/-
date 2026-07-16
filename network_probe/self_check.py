@@ -68,28 +68,33 @@ def _run_direction() -> tuple[dict, dict]:
     return results["sender"], results["receiver"]
 
 
-def _run_client_package_check(executable_path: Path | None) -> None:
-    if executable_path is not None:
-        package = build_client_package(executable_path, "http://127.0.0.1:8000")
+def _run_client_package_check(bundle_path: Path | None) -> None:
+    if bundle_path is not None:
+        package = build_client_package(bundle_path, "http://127.0.0.1:8000")
         errors = verify_client_package(package.payload, package.server_url)
         if errors:
             raise RuntimeError(errors[0])
         return
 
     with tempfile.TemporaryDirectory() as directory:
-        placeholder = Path(directory) / "InternalUpload.exe"
+        bundle = Path(directory) / "client-template"
+        bundle.mkdir()
+        placeholder = bundle / "NetworkProbeClient.exe"
         placeholder.write_bytes(b"MZ-probe-self-check")
-        package = build_client_package(placeholder, "http://127.0.0.1:8000")
+        internal = bundle / "_internal"
+        internal.mkdir()
+        (internal / "runtime.txt").write_text("self-check", encoding="utf-8")
+        package = build_client_package(bundle, "http://127.0.0.1:8000")
         errors = verify_client_package(package.payload, package.server_url)
         if errors:
             raise RuntimeError(errors[0])
 
 
-def run_probe_self_check(executable_path: Path | None = None) -> int:
+def run_probe_self_check(bundle_path: Path | None = None) -> int:
     try:
         first_sender, first_receiver = _run_direction()
         second_sender, second_receiver = _run_direction()
-        _run_client_package_check(executable_path)
+        _run_client_package_check(bundle_path)
     except Exception as exc:
         print(f"TCP probe self-check failed: {exc}")
         return 1
