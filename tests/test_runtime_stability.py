@@ -425,6 +425,24 @@ def test_process_running_detects_current_and_missing_process(monkeypatch):
     assert is_process_running(999_999) is False
 
 
+def test_process_running_uses_windows_process_query(monkeypatch):
+    checked = []
+    monkeypatch.setattr(stability_module.os, "name", "nt")
+    monkeypatch.setattr(
+        stability_module,
+        "_is_windows_process_running",
+        lambda pid: checked.append(pid) or False,
+    )
+    monkeypatch.setattr(
+        stability_module.os,
+        "kill",
+        lambda *_args: pytest.fail("Windows에서는 os.kill(pid, 0)을 사용하면 안 됩니다."),
+    )
+
+    assert is_process_running(999_999) is False
+    assert checked == [999_999]
+
+
 def test_timed_snapshot_cache_reuses_value_until_ttl_expires():
     now = [10.0]
     cache = TimedSnapshotCache(ttl_seconds=5.0, clock=lambda: now[0])
