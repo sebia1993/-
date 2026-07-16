@@ -101,7 +101,7 @@ def is_existing_instance(
         payload = json.loads(response.read(4097).decode("utf-8"))
         return (
             payload.get("app") == APP_ID
-            and payload.get("status") == "ok"
+            and payload.get("status") in {"ok", "degraded"}
             and payload.get("port") == port
         )
     except (OSError, ValueError, json.JSONDecodeError):

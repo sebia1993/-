@@ -17,7 +17,8 @@ from typing import Any, Callable
 from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 
 from network_measurement import NetworkMeasurementGate
-from result_storage import write_json_atomically
+from result_storage import prune_old_json_results, write_json_atomically
+from runtime_stability import CsvIntegrityError, archive_csv_history
 from sustained_excel import (
     EXCEL_MIME_TYPE,
     SustainedExcelError,
@@ -531,6 +532,11 @@ class SustainedCheckManager:
                 finally:
                     result_path.unlink(missing_ok=True)
                 raise
+            try:
+                archive_csv_history(self.log_path, SUSTAINED_LOG_FIELDS)
+            except (OSError, CsvIntegrityError):
+                pass
+            prune_old_json_results(self.results_root)
 
 
 def create_sustained_blueprint(

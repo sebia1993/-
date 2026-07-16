@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import threading
 import time
@@ -26,6 +27,12 @@ from network_sustained import SUSTAINED_LOG_FIELDS
 from network_measurement import NetworkMeasurementGate
 from network_probe.models import PROBE_PROTOCOL_VERSION
 from network_probe.service import PROBE_LOG_FIELDS
+from runtime_stability import (
+    CsvIntegrityError,
+    DataDirectoryLock,
+    InsufficientStorageError,
+    TimedSnapshotCache,
+)
 from tools.verify_release_zip import REQUIRED_FILES, verify_zip
 from tools.generate_security_artifacts import generate_security_artifacts
 
@@ -112,6 +119,54 @@ def test_upload_saves_file_and_csv(app_client):
     assert row["storage_subdir"] == "case-001"
     assert row["memo"] == "장애 로그"
     assert Path(row["storage_path"]).read_bytes() == b"hello"
+
+
+def test_upload_rejects_when_reserved_disk_space_is_unavailable(app_client, monkeypatch):
+    client, config, _ = app_client
+
+    monkeypatch.setattr(
+        app_module,
+        "ensure_storage_capacity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            InsufficientStorageError("full")
+        ),
+    )
+
+    response = post_file(client, filename="too-large.txt", content=b"payload")
+
+    assert response.status_code == 507
+    assert "저장 공간이 부족" in response.get_data(as_text=True)
+    assert read_upload_log(config) == []
+    assert list(config.storage_root.rglob(f"{app_module.UPLOAD_ARTIFACT_PREFIX}*")) == []
+
+
+def test_upload_cleans_partial_file_when_space_runs_out_during_copy(
+    app_client,
+    monkeypatch,
+):
+    client, config, _ = app_client
+    checks = 0
+
+    def fail_during_copy(*args, **kwargs):
+        nonlocal checks
+        checks += 1
+        if checks >= 4:
+            raise InsufficientStorageError("full during copy")
+        return 10 * 1024 * 1024 * 1024
+
+    monkeypatch.setattr(app_module, "ensure_storage_capacity", fail_during_copy)
+
+    response = post_file(
+        client,
+        filename="partial.txt",
+        content=b"x" * (app_module.UPLOAD_SPACE_RECHECK_BYTES + 1),
+    )
+
+    assert response.status_code == 507
+    assert "파일을 저장하지 않았습니다" in response.get_data(as_text=True)
+    assert read_upload_log(config) == []
+    assert not (config.storage_root / "partial.txt").exists()
+    assert list(config.storage_root.rglob(f"{app_module.UPLOAD_ARTIFACT_PREFIX}*")) == []
 
 
 @pytest.mark.parametrize(
@@ -234,6 +289,39 @@ def test_cleanup_stale_upload_artifacts_only_removes_old_project_files(tmp_path)
     assert user_part.exists()
 
 
+def test_cleanup_upload_artifacts_removes_dead_owner_and_preserves_live_owner(
+    tmp_path,
+    monkeypatch,
+):
+    storage_root = tmp_path / "uploads"
+    storage_root.mkdir()
+    dead_lock = storage_root / f"{app_module.UPLOAD_ARTIFACT_PREFIX}dead.lock"
+    dead_part = storage_root / f"{app_module.UPLOAD_ARTIFACT_PREFIX}dead.part"
+    live_lock = storage_root / f"{app_module.UPLOAD_ARTIFACT_PREFIX}live.lock"
+    live_part = storage_root / f"{app_module.UPLOAD_ARTIFACT_PREFIX}live.part"
+    dead_part.write_bytes(b"partial")
+    live_part.write_bytes(b"partial")
+    dead_lock.write_text(
+        json.dumps({"pid": 101, "part": dead_part.name}),
+        encoding="ascii",
+    )
+    live_lock.write_text(
+        json.dumps({"pid": 202, "part": live_part.name}),
+        encoding="ascii",
+    )
+    for path in (dead_lock, dead_part, live_lock, live_part):
+        os.utime(path, (100, 100))
+    monkeypatch.setattr(app_module, "is_process_running", lambda pid: pid == 202)
+
+    removed = app_module.cleanup_stale_upload_artifacts(storage_root, now=200_000)
+
+    assert removed == 2
+    assert not dead_lock.exists()
+    assert not dead_part.exists()
+    assert live_lock.exists()
+    assert live_part.exists()
+
+
 def test_upload_log_reader_waits_for_in_progress_writer(app_client, monkeypatch):
     _, config, _ = app_client
     writer_started = threading.Event()
@@ -291,6 +379,52 @@ def test_upload_log_reader_waits_for_in_progress_writer(app_client, monkeypatch)
     assert not reader.is_alive()
     assert errors == []
     assert [row["upload_id"] for row in observed_rows] == ["concurrent-log-entry"]
+
+
+def test_upload_log_snapshot_avoids_repeated_full_csv_reads(app_client, monkeypatch):
+    client, config, _ = app_client
+    assert post_file(client, filename="cached.txt", content=b"cached").status_code == 200
+    original_open = Path.open
+    read_open_count = 0
+
+    def count_log_reads(path, *args, **kwargs):
+        nonlocal read_open_count
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if path == config.log_path and mode == "r":
+            read_open_count += 1
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", count_log_reads)
+
+    first = read_upload_log(config)
+    second = read_upload_log(config)
+    found = app_module.find_upload(first[0]["upload_id"], config)
+
+    assert first == second
+    assert found == first[0]
+    assert read_open_count == 0
+
+
+def test_upload_log_snapshot_reloads_after_external_file_change(app_client):
+    client, config, _ = app_client
+    assert post_file(client, filename="first.txt", content=b"first").status_code == 200
+    assert [row["upload_id"] for row in read_upload_log(config)]
+    external_row = {
+        "upload_id": "external-change",
+        "uploaded_at": "2026-07-16 12:00:00 +0900",
+        "original_filename": "external.txt",
+        "stored_filename": "external.txt",
+        "storage_subdir": "",
+        "storage_path": str(config.storage_root / "external.txt"),
+        "memo": "",
+        "download_url": "http://files.local:8000/download/external-change",
+    }
+    with config.log_path.open("a", encoding="utf-8", newline="") as handle:
+        csv.DictWriter(handle, fieldnames=app_module.CSV_FIELDS).writerow(external_row)
+
+    rows = read_upload_log(config)
+
+    assert rows[0]["upload_id"] == "external-change"
 
 
 def test_upload_log_failure_removes_saved_file(app_client, monkeypatch):
@@ -409,6 +543,27 @@ def test_download_by_id(app_client):
     assert response.mimetype == "application/octet-stream"
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_download_and_delete_reject_csv_path_outside_storage_root(app_client):
+    client, config, tmp_path = app_client
+    post_file(client, filename="inside.txt", content=b"inside")
+    row = read_upload_log(config)[0]
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_bytes(b"outside")
+    row["storage_path"] = str(outside_file)
+    app_module._write_upload_log_rows(config.log_path, [row])
+
+    download = client.get(f"/download/{row['upload_id']}")
+    deletion = client.post(
+        f"/delete/{row['upload_id']}",
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert download.status_code == 404
+    assert deletion.status_code == 409
+    assert outside_file.read_bytes() == b"outside"
+    assert read_upload_log(config)[0]["storage_path"] == str(outside_file)
 
 
 def test_delete_requires_allowed_ip(app_client):
@@ -805,6 +960,21 @@ def test_windows_release_build_requires_source_version_match():
     assert 'does not match requested release' in script
 
 
+def test_windows_release_build_removes_runtime_lock_and_diagnostics_after_smoke_check():
+    script = Path("tools/build_windows_release.ps1").read_text(encoding="utf-8")
+
+    assert 'data/.internal-upload.instance.lock' in script
+    assert 'data/diagnostics' in script
+    assert 'Remove-Item $RuntimeLock -Force' in script
+    assert 'Remove-Item $RuntimeDiagnostics -Recurse -Force' in script
+
+
+def test_windows_release_workflow_compiles_runtime_stability_module():
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert "startup_ports.py runtime_stability.py network_sustained.py" in workflow
+
+
 def test_csv_header_is_utf8_sig(app_client):
     _, config, _ = app_client
     with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -816,9 +986,108 @@ def test_csv_header_is_utf8_sig(app_client):
     assert network_header == NETWORK_CHECK_FIELDS
 
 
+def test_app_startup_recovers_incomplete_upload_log_tail_after_backup(tmp_path):
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    config.log_path.parent.mkdir(parents=True)
+    with config.log_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=app_module.CSV_FIELDS)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "upload_id": "complete",
+                "uploaded_at": "2026-07-16 12:00:00 +0900",
+                "original_filename": "complete.txt",
+                "stored_filename": "complete.txt",
+                "storage_subdir": "",
+                "storage_path": str(config.storage_root / "complete.txt"),
+                "memo": "complete",
+                "download_url": "http://files.local:8000/download/complete",
+            }
+        )
+    with config.log_path.open("ab") as handle:
+        handle.write(b'incomplete,"open')
+    damaged_bytes = config.log_path.read_bytes()
+
+    create_app(config_path)
+
+    assert [row["upload_id"] for row in read_upload_log(config)] == ["complete"]
+    backups = list(config.log_path.parent.glob("upload_log.csv.recovery-*.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == damaged_bytes
+
+
+def test_app_startup_prunes_old_csv_recovery_backups_without_touching_logs(tmp_path):
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    app_module.ensure_directories(config)
+    for index in range(7):
+        backup = config.log_path.parent / (
+            f"upload_log.csv.recovery-2026070{index + 1}-000000-0000000{index}.bak"
+        )
+        backup.write_bytes(str(index).encode("ascii"))
+    original_log = config.log_path.read_bytes()
+
+    create_app(config_path)
+
+    assert len(list(config.log_path.parent.glob("upload_log.csv.recovery-*.bak"))) == 5
+    assert config.log_path.read_bytes() == original_log
+
+
+def test_app_startup_refuses_upload_log_with_invalid_header(tmp_path):
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    config.log_path.parent.mkdir(parents=True)
+    config.log_path.write_text("wrong,header\n", encoding="utf-8-sig")
+
+    with pytest.raises(CsvIntegrityError, match="invalid_header"):
+        create_app(config_path)
+
+
+@pytest.mark.parametrize(
+    ("path_attribute", "fieldnames"),
+    [
+        ("log_path", app_module.CSV_FIELDS),
+        ("network_check_log_path", NETWORK_CHECK_FIELDS),
+        ("network_check_session_log_path", SUSTAINED_LOG_FIELDS),
+        ("network_probe_log_path", PROBE_LOG_FIELDS),
+    ],
+)
+def test_app_startup_checks_and_recovers_each_operational_csv(
+    tmp_path,
+    path_attribute,
+    fieldnames,
+):
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    app_module.ensure_directories(config)
+    log_path = getattr(config, path_attribute)
+    with log_path.open("ab") as handle:
+        handle.write(b'incomplete,"open')
+
+    create_app(config_path)
+
+    with log_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        assert next(csv.reader(handle)) == fieldnames
+        assert list(csv.reader(handle)) == []
+    assert len(list(log_path.parent.glob(f"{log_path.name}.recovery-*.bak"))) == 1
+
+
 def test_smoke_check_returns_success(tmp_path):
     config_path = write_config(tmp_path)
     assert run_smoke_check(config_path) == 0
+
+
+def test_smoke_check_refuses_data_directory_used_by_running_server(tmp_path):
+    config_path = write_config(tmp_path)
+    instance_lock = DataDirectoryLock(
+        tmp_path / "data" / ".internal-upload.instance.lock"
+    )
+    instance_lock.acquire()
+    try:
+        assert run_smoke_check(config_path) == 1
+    finally:
+        instance_lock.release()
 
 
 def test_health_endpoint_identifies_app_and_active_port(app_client):
@@ -827,14 +1096,128 @@ def test_health_endpoint_identifies_app_and_active_port(app_client):
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json == {
-        "app": "internal-upload",
-        "status": "ok",
-        "port": 8000,
-        "version": APP_VERSION,
-        "probe_protocol_version": PROBE_PROTOCOL_VERSION,
+    payload = response.json
+    assert payload["app"] == "internal-upload"
+    assert payload["status"] == "degraded"
+    assert payload["port"] == 8000
+    assert payload["version"] == APP_VERSION
+    assert payload["probe_protocol_version"] == PROBE_PROTOCOL_VERSION
+    assert payload["checks"]["storage"]["status"] == "ok"
+    assert payload["checks"]["csv"]["files"] == {
+        "upload_log": "ok",
+        "network_check_log": "ok",
+        "network_check_session_log": "ok",
+        "network_probe_log": "ok",
     }
+    assert payload["checks"]["tcp_probe"]["enabled"] is True
+    assert payload["checks"]["tcp_probe"]["available"] is False
+    assert payload["checks"]["measurement"]["active"] is False
+    assert len(response.data) <= 4097
     assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_health_endpoint_reports_ok_when_probe_is_disabled_and_storage_is_healthy(tmp_path):
+    config_path = write_config(tmp_path)
+    with config_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n[network_probe]\nENABLED=false\nPORT=5201\n")
+    flask_app = create_app(config_path)
+
+    response = flask_app.test_client().get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json["status"] == "ok"
+    assert response.json["checks"]["tcp_probe"]["status"] == "ok"
+    assert response.json["checks"]["tcp_probe"]["enabled"] is False
+
+
+def test_health_endpoint_detects_csv_corruption_after_startup(app_client):
+    client, config, _ = app_client
+    with config.network_check_log_path.open("a", encoding="utf-8", newline="") as handle:
+        handle.write("incomplete\n")
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json["status"] == "degraded"
+    assert response.json["checks"]["csv"]["status"] == "degraded"
+    assert response.json["checks"]["csv"]["files"]["network_check_log"] == "wrong_column_count"
+
+
+def test_health_endpoint_stays_available_when_probe_status_check_fails(tmp_path, monkeypatch):
+    config_path = write_config(tmp_path)
+    flask_app = create_app(config_path)
+    service = flask_app.extensions["network_probe"]
+    monkeypatch.setattr(
+        service,
+        "status_payload",
+        lambda: (_ for _ in ()).throw(RuntimeError("probe state failed")),
+    )
+
+    response = flask_app.test_client().get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json["status"] == "degraded"
+    assert response.json["checks"]["tcp_probe"]["available"] is False
+    assert "확인할 수 없습니다" in response.json["checks"]["tcp_probe"]["error"]
+
+
+def test_health_endpoint_warns_about_long_running_measurement(tmp_path):
+    config_path = write_config(tmp_path)
+    with config_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n[network_probe]\nENABLED=false\nPORT=5201\n")
+    now = [0.0]
+    gate = NetworkMeasurementGate(clock=lambda: now[0])
+    flask_app = create_app(config_path, measurement_gate=gate)
+    assert gate.acquire("http_quick", "active") is True
+    now[0] = 721.0
+
+    response = flask_app.test_client().get("/api/health")
+
+    measurement = response.json["checks"]["measurement"]
+    assert response.json["status"] == "degraded"
+    assert measurement["status"] == "warning"
+    assert measurement["active"] is True
+    assert measurement["long_running"] is True
+    assert "owner_id" not in measurement
+
+
+def test_health_endpoint_caches_disk_and_csv_checks_for_five_seconds(
+    tmp_path,
+    monkeypatch,
+):
+    config_path = write_config(tmp_path)
+    now = [0.0]
+    cache = TimedSnapshotCache(ttl_seconds=5.0, clock=lambda: now[0])
+    storage_calls = []
+    original_storage_check = app_module.check_storage_health
+
+    def count_storage_checks(path):
+        storage_calls.append(path)
+        return original_storage_check(path)
+
+    monkeypatch.setattr(app_module, "check_storage_health", count_storage_checks)
+    flask_app = create_app(config_path, health_check_cache=cache)
+    client = flask_app.test_client()
+
+    assert client.get("/api/health").status_code == 200
+    assert client.get("/api/health").status_code == 200
+    assert len(storage_calls) == 2
+
+    now[0] = 5.0
+    assert client.get("/api/health").status_code == 200
+    assert len(storage_calls) == 4
+
+
+def test_app_writes_bounded_diagnostic_log_on_startup(tmp_path):
+    config_path = write_config(tmp_path)
+    flask_app = create_app(config_path)
+    logger = flask_app.extensions["diagnostic_logger"]
+    for handler in logger.handlers:
+        handler.flush()
+
+    log_path = tmp_path / "data" / "diagnostics" / "internal-upload.log"
+    assert log_path.exists()
+    assert "application_initialized" in log_path.read_text(encoding="utf-8")
 
 
 def test_release_zip_verifier_accepts_expected_structure(tmp_path):

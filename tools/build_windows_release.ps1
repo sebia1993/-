@@ -136,6 +136,14 @@ pause
 4. 포트 충돌 시 프로그램이 제안한 빈 포트를 승인하면 config.ini에 저장됩니다.
 5. Windows 방화벽은 자동 조회하거나 변경하지 않습니다. 다른 PC 접속이 실패하면 표시된 포트를 확인하세요.
 
+운영 안정성:
+- 같은 data 폴더를 사용하는 서버는 하나만 실행됩니다.
+- 시작 시 CSV 끝이 불완전하면 원본 .bak 파일을 남긴 뒤 마지막 레코드만 복구합니다.
+- 진단 로그는 data/diagnostics에 2MB 단위로 순환 저장됩니다.
+- 서버는 최소 1GB의 디스크 여유 공간을 남기고 부족하면 업로드를 중단합니다.
+- 웹 요청은 최대 32개를 처리하며 30초 동안 데이터가 없는 연결을 종료합니다.
+- 측정 CSV는 오래된 행을 월별로 보관하고 상세 JSON은 유형별 최신 1,000건을 유지합니다.
+
 TCP 전송 성능 측정:
 1. TCP 측정 서버는 기본으로 함께 시작됩니다. 기본 포트는 5201입니다.
 2. 웹 화면의 TCP 전송 성능 측정에서 Windows 클라이언트 ZIP을 받습니다.
@@ -160,6 +168,11 @@ TCP 전송 성능 측정:
     & $PackagedClientExe --self-check
     if ($LASTEXITCODE -ne 0) { throw "Client self-check failed" }
 
+    $RuntimeLock = Join-Path $PackageRoot "data/.internal-upload.instance.lock"
+    if (Test-Path $RuntimeLock) { Remove-Item $RuntimeLock -Force }
+    $RuntimeDiagnostics = Join-Path $PackageRoot "data/diagnostics"
+    if (Test-Path $RuntimeDiagnostics) { Remove-Item $RuntimeDiagnostics -Recurse -Force }
+
     python tools/generate_security_artifacts.py `
         --root $PackageRoot `
         --version $Version `
@@ -176,10 +189,19 @@ TCP 전송 성능 측정:
     }
 
     @"
-# $Version - 사내 업로드 Windows 보안 구조 개선 사전 릴리즈
+# $Version - 사내 업로드 Windows 안정성 개선 릴리즈
 
 ## 주요 변경
 
+- 시작 시 운영 CSV 네 종류의 헤더와 마지막 레코드 검증
+- 마지막 미완성 CSV 레코드의 원본 백업 후 자동 제거
+- CSV 저장 경로가 현재 STORAGE_ROOT 내부인지 다운로드·삭제 전에 재검증
+- HTTP·TCP 측정 잠금의 절대 유지시간 상한과 장기 점유 상태 확인
+- 같은 data 폴더를 사용하는 서버의 중복 실행 차단
+- 2MB 순환 진단 로그와 저장소·CSV·TCP·측정 상태를 구분하는 상태 API
+- 1GB 디스크 여유 공간 보호와 업로드 중 공간 부족 임시 파일 정리
+- 웹 요청 최대 32개와 30초 무동작 연결 제한
+- 측정 CSV 월별 보관, 상세 JSON 최신 1,000건과 CSV 복구 백업 최신 5개 유지
 - PyInstaller one-file 대신 임시 자체 압축 해제가 없는 포터블 onedir 구조
 - 서버 전용 ``InternalUploadServer.exe``와 TCP 전용 ``NetworkProbeClient.exe`` 분리
 - 서버 시작 시 PowerShell과 ``ExecutionPolicy Bypass`` 실행 제거

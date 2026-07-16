@@ -42,6 +42,10 @@ This is not a general-purpose file transfer service. Keep the scope small.
   HTTP measurement results.
 - `network_measurement.py`: shared single-measurement gate for HTTP and TCP checks.
 - `result_storage.py`: durable temporary-file, fsync, and atomic JSON result writes.
+- `runtime_stability.py`: CSV tail recovery, data-directory instance locking,
+  rotating diagnostics, and storage health checks.
+- `bounded_server.py`: bounded HTTP request workers and inactive-connection
+  timeout handling for the portable web server.
 - `network_probe/`: TCP protocol, agent, server, statistics, Windows telemetry,
   generated client ZIP, Excel reporting, Flask API, and loopback self-check.
 - `probe_client.py`: the dedicated Windows TCP measurement client entrypoint.
@@ -71,7 +75,7 @@ Use the narrowest relevant check while developing, then run the full baseline
 before calling work complete.
 
 ```powershell
-python -m compileall app_version.py app.py probe_client.py startup_ports.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
+python -m compileall app_version.py app.py bounded_server.py probe_client.py startup_ports.py runtime_stability.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
 node --check static/network_check.js
 node --check static/network_sustained.js
 node --check static/network_probe.js
@@ -82,8 +86,9 @@ python -m pytest -q
 On macOS in this workspace, use:
 
 ```bash
-.venv/bin/python -m compileall app_version.py app.py probe_client.py startup_ports.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
+.venv/bin/python -m compileall app_version.py app.py bounded_server.py probe_client.py startup_ports.py runtime_stability.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
 .venv/bin/python -m pytest -q
+.venv/bin/python tools/run_stability_fault_suite.py
 ```
 
 ## README / Release Document Rules

@@ -7,6 +7,7 @@ import pytest
 
 import app as app_module
 import startup_ports as ports_module
+from runtime_stability import DataDirectoryLock
 from startup_ports import (
     CURRENT_CONFIG_VERSION,
     FIREWALL_NOT_APPLICABLE,
@@ -382,6 +383,57 @@ def test_main_existing_instance_exits_without_binding(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "make_server", lambda *args, **kwargs: pytest.fail("must not bind"))
 
     assert app_module.main(["--config", str(path)]) == 0
+
+
+@pytest.mark.parametrize("health_status", ["ok", "degraded"])
+def test_existing_instance_detection_accepts_healthy_and_degraded_app(
+    monkeypatch,
+    health_status,
+):
+    class FakeResponse:
+        status = 200
+
+        def read(self, _limit):
+            return (
+                '{"app":"internal-upload","status":"%s","port":8000}'
+                % health_status
+            ).encode("utf-8")
+
+    class FakeConnection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ports_module.http.client, "HTTPConnection", FakeConnection)
+
+    assert ports_module.is_existing_instance(8000) is True
+
+
+def test_main_rejects_second_instance_using_same_data_directory(tmp_path, monkeypatch):
+    path = write_config(tmp_path)
+    existing_lock = DataDirectoryLock(
+        tmp_path / "data" / ".internal-upload.instance.lock"
+    )
+    existing_lock.acquire()
+    monkeypatch.setattr(
+        app_module,
+        "resolve_startup_port",
+        lambda *args, **kwargs: PortResolution(8000, 8000),
+    )
+    monkeypatch.setattr(app_module, "make_server", lambda *args, **kwargs: pytest.fail("must not bind"))
+
+    try:
+        assert app_module.main(["--config", str(path)]) == 2
+    finally:
+        existing_lock.release()
 
 
 def test_main_starts_probe_on_approved_fallback_then_persists_port(tmp_path, monkeypatch):

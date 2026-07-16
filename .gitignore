@@ -10,6 +10,10 @@ dist/
 uploads/*
 !uploads/.gitkeep
 data/*.csv
+data/*.bak
+data/.internal-upload.instance.lock
+data/diagnostics/
+data/archives/
 !data/upload_log.csv
 !data/network_check_log.csv
 !data/network_check_session_log.csv

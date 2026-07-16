@@ -4,10 +4,13 @@ import csv
 import argparse
 import hashlib
 import ipaddress
+import json
+import logging
 import os
 import re
 import socket
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -18,14 +21,37 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import quote, urlparse
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
-from werkzeug.serving import make_server
 
 from app_version import APP_VERSION
-from network_sustained import create_sustained_blueprint, ensure_sustained_storage
+from bounded_server import make_bounded_server as make_server
+from network_sustained import SUSTAINED_LOG_FIELDS, create_sustained_blueprint, ensure_sustained_storage
 from network_measurement import NetworkMeasurementGate
 from network_probe.models import PROBE_PROTOCOL_VERSION, ProbeConfig
 from network_probe.routes import create_probe_blueprint
-from network_probe.service import ProbeService, ensure_probe_storage
+from network_probe.service import PROBE_LOG_FIELDS, ProbeService, ensure_probe_storage
+from result_storage import prune_old_json_results
+from runtime_stability import (
+    LOW_FREE_SPACE_WARNING_BYTES,
+    MEASUREMENT_CSV_MAX_ACTIVE_ROWS,
+    CsvIntegrityError,
+    CsvIntegrityResult,
+    DataDirectoryLock,
+    InsufficientStorageError,
+    InstanceLockError,
+    TimedSnapshotCache,
+    archive_csv_history,
+    attach_diagnostic_handlers,
+    check_storage_health,
+    close_diagnostic_logger,
+    configure_diagnostic_logger,
+    detach_diagnostic_handlers,
+    ensure_csv_integrity,
+    ensure_storage_capacity,
+    inspect_csv_integrity,
+    is_process_running,
+    is_storage_full_error,
+    prune_recovery_backups,
+)
 from startup_ports import (
     APP_ID,
     FIREWALL_ALLOWED,
@@ -88,6 +114,8 @@ NETWORK_CHECK_CHUNK = bytes(index % 251 for index in range(NETWORK_CHECK_CHUNK_S
 NETWORK_CHECK_UPLOAD_SESSION_TTL_SECONDS = 15 * 60
 UPLOAD_ARTIFACT_PREFIX = ".internal-upload-"
 UPLOAD_ARTIFACT_STALE_SECONDS = 24 * 60 * 60
+UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
+UPLOAD_SPACE_RECHECK_BYTES = 8 * 1024 * 1024
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -202,6 +230,7 @@ BLOCKED_UPLOAD_SUFFIXES = frozenset(
 )
 _csv_lock = threading.Lock()
 _network_check_csv_lock = threading.Lock()
+_upload_log_cache: dict[Path, "UploadLogSnapshot"] = {}
 
 
 @dataclass(frozen=True)
@@ -241,6 +270,13 @@ class UploadReservation:
     target_path: Path
     temporary_path: Path
     lock_path: Path
+
+
+@dataclass(frozen=True)
+class UploadLogSnapshot:
+    signature: tuple[int, int, int, int, int]
+    rows: tuple[dict[str, str], ...]
+    by_id: dict[str, dict[str, str]]
 
 
 class UploadConflictError(RuntimeError):
@@ -308,7 +344,7 @@ def parse_csv_list(value: str) -> tuple[str, ...]:
     return tuple(items or ["127.0.0.1", "::1"])
 
 
-def ensure_directories(config: AppConfig) -> None:
+def ensure_directories(config: AppConfig) -> list[CsvIntegrityResult]:
     config.storage_root.mkdir(parents=True, exist_ok=True)
     cleanup_stale_upload_artifacts(config.storage_root)
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,6 +352,36 @@ def ensure_directories(config: AppConfig) -> None:
     ensure_network_check_log_file(config.network_check_log_path)
     ensure_sustained_storage(config.network_check_session_log_path, config.network_check_results_root)
     ensure_probe_storage(config.network_probe_log_path, config.network_probe_results_root)
+    integrity_results = [
+        ensure_csv_integrity(config.log_path, CSV_FIELDS),
+        ensure_csv_integrity(config.network_check_log_path, NETWORK_CHECK_FIELDS),
+        ensure_csv_integrity(config.network_check_session_log_path, SUSTAINED_LOG_FIELDS),
+        ensure_csv_integrity(config.network_probe_log_path, PROBE_LOG_FIELDS),
+    ]
+    for log_path in (
+        config.log_path,
+        config.network_check_log_path,
+        config.network_check_session_log_path,
+        config.network_probe_log_path,
+    ):
+        prune_recovery_backups(log_path)
+    prune_old_json_results(config.network_check_results_root)
+    prune_old_json_results(config.network_probe_results_root)
+    with _csv_lock:
+        _upload_log_cache.pop(config.log_path.resolve(), None)
+    measurement_logs = (
+        (integrity_results[1], config.network_check_log_path, NETWORK_CHECK_FIELDS),
+        (
+            integrity_results[2],
+            config.network_check_session_log_path,
+            SUSTAINED_LOG_FIELDS,
+        ),
+        (integrity_results[3], config.network_probe_log_path, PROBE_LOG_FIELDS),
+    )
+    for result, path, fieldnames in measurement_logs:
+        if result.row_count > MEASUREMENT_CSV_MAX_ACTIVE_ROWS:
+            archive_csv_history(path, fieldnames, min_size_bytes=0)
+    return integrity_results
 
 
 def ensure_log_file(log_path: Path) -> None:
@@ -410,7 +476,47 @@ def cleanup_stale_upload_artifacts(
 ) -> int:
     current_time = time.time() if now is None else now
     removed = 0
+    protected_paths: set[Path] = set()
+    for lock_path in storage_root.rglob(f"{UPLOAD_ARTIFACT_PREFIX}*.lock"):
+        part_path = None
+        owner_running = None
+        try:
+            metadata = json.loads(lock_path.read_text(encoding="ascii"))
+            part_name = str(metadata.get("part", ""))
+            if (
+                part_name == Path(part_name).name
+                and part_name.startswith(UPLOAD_ARTIFACT_PREFIX)
+                and part_name.endswith(".part")
+            ):
+                part_path = lock_path.parent / part_name
+                owner_running = is_process_running(int(metadata.get("pid", 0)))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+        if owner_running is True:
+            protected_paths.add(lock_path)
+            if part_path is not None:
+                protected_paths.add(part_path)
+            continue
+        try:
+            expired = current_time - lock_path.stat().st_mtime >= older_than_seconds
+        except (FileNotFoundError, OSError):
+            continue
+        if owner_running is not False and not expired:
+            continue
+        for path in (part_path, lock_path):
+            if path is None:
+                continue
+            try:
+                if path.is_file():
+                    path.unlink()
+                    removed += 1
+            except (FileNotFoundError, OSError):
+                continue
+
     for path in storage_root.rglob(f"{UPLOAD_ARTIFACT_PREFIX}*"):
+        if path in protected_paths:
+            continue
         if path.suffix not in {".part", ".lock"}:
             continue
         try:
@@ -435,17 +541,32 @@ def _try_reserve_upload_target(
 ) -> UploadReservation | None:
     target_path = storage_dir / stored_filename
     lock_path = _upload_lock_path(storage_dir, stored_filename)
+    temporary_path = storage_dir / f"{UPLOAD_ARTIFACT_PREFIX}{upload_id}.part"
     try:
         lock_descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         return None
     try:
+        metadata = json.dumps(
+            {
+                "pid": os.getpid(),
+                "part": temporary_path.name,
+                "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        ).encode("ascii")
+        os.write(lock_descriptor, metadata)
+        os.fsync(lock_descriptor)
         os.close(lock_descriptor)
     except Exception:
+        try:
+            os.close(lock_descriptor)
+        except OSError:
+            pass
         lock_path.unlink(missing_ok=True)
         raise
 
-    temporary_path = storage_dir / f"{UPLOAD_ARTIFACT_PREFIX}{upload_id}.part"
     temporary_created = False
     keep_reservation = False
     try:
@@ -502,14 +623,40 @@ def reserve_upload_target(
     raise OSError("고유한 업로드 저장 경로를 예약할 수 없습니다.")
 
 
-def commit_uploaded_file(uploaded_file, reservation: UploadReservation) -> None:
-    with reservation.temporary_path.open("r+b") as handle:
-        handle.seek(0)
-        handle.truncate(0)
-        uploaded_file.save(handle)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(reservation.temporary_path, reservation.target_path)
+def commit_uploaded_file(
+    uploaded_file,
+    reservation: UploadReservation,
+    *,
+    storage_root: Path | None = None,
+) -> None:
+    capacity_path = storage_root or reservation.temporary_path.parent
+    source = getattr(uploaded_file, "stream", uploaded_file)
+    bytes_since_space_check = UPLOAD_SPACE_RECHECK_BYTES
+    try:
+        with reservation.temporary_path.open("r+b") as handle:
+            handle.seek(0)
+            handle.truncate(0)
+            while True:
+                if bytes_since_space_check >= UPLOAD_SPACE_RECHECK_BYTES:
+                    ensure_storage_capacity(
+                        capacity_path,
+                        required_bytes=UPLOAD_SPACE_RECHECK_BYTES,
+                    )
+                    bytes_since_space_check = 0
+                chunk = source.read(UPLOAD_COPY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                bytes_since_space_check += len(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(reservation.temporary_path, reservation.target_path)
+    except OSError as exc:
+        if is_storage_full_error(exc):
+            raise InsufficientStorageError(
+                "서버 저장 공간이 부족하여 업로드를 완료하지 못했습니다."
+            ) from exc
+        raise
 
 
 def release_upload_reservation(reservation: UploadReservation) -> None:
@@ -582,25 +729,68 @@ def _append_csv_row_with_rollback(
 
 def append_upload_log(row: dict[str, str], config: AppConfig) -> None:
     with _csv_lock:
-        ensure_log_file(config.log_path)
-        _append_csv_row_with_rollback(config.log_path, CSV_FIELDS, row)
+        snapshot = _read_upload_log_snapshot_locked(config)
+        normalized_row = {field: row.get(field, "") for field in CSV_FIELDS}
+        _append_csv_row_with_rollback(config.log_path, CSV_FIELDS, normalized_row)
+        _store_upload_log_snapshot_locked(
+            config.log_path,
+            [*snapshot.rows, normalized_row],
+        )
 
 
 def read_upload_log(config: AppConfig, limit: int | None = None) -> list[dict[str, str]]:
     with _csv_lock:
-        ensure_log_file(config.log_path)
-        with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-    rows = [row for row in rows if row.get("upload_id")]
-    rows.reverse()
-    return rows[:limit] if limit else rows
+        snapshot = _read_upload_log_snapshot_locked(config)
+        rows = [row for row in snapshot.rows if row.get("upload_id")]
+        selected = rows[-limit:] if limit else rows
+        return [dict(row) for row in reversed(selected)]
 
 
 def find_upload(upload_id: str, config: AppConfig) -> dict[str, str] | None:
-    for row in read_upload_log(config):
-        if row.get("upload_id") == upload_id:
-            return row
-    return None
+    with _csv_lock:
+        row = _read_upload_log_snapshot_locked(config).by_id.get(upload_id)
+        return dict(row) if row is not None else None
+
+
+def _upload_log_signature(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return (
+        int(stat.st_dev),
+        int(stat.st_ino),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+        int(stat.st_ctime_ns),
+    )
+
+
+def _read_upload_log_snapshot_locked(config: AppConfig) -> UploadLogSnapshot:
+    ensure_log_file(config.log_path)
+    cache_key = config.log_path.resolve()
+    signature = _upload_log_signature(config.log_path)
+    cached = _upload_log_cache.get(cache_key)
+    if cached is not None and cached.signature == signature:
+        return cached
+    with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    return _store_upload_log_snapshot_locked(config.log_path, rows)
+
+
+def _store_upload_log_snapshot_locked(
+    path: Path,
+    rows: list[dict[str, str]],
+) -> UploadLogSnapshot:
+    normalized_rows = tuple(
+        {field: row.get(field, "") for field in CSV_FIELDS} for row in rows
+    )
+    snapshot = UploadLogSnapshot(
+        signature=_upload_log_signature(path),
+        rows=normalized_rows,
+        by_id={
+            row["upload_id"]: row for row in normalized_rows if row.get("upload_id")
+        },
+    )
+    _upload_log_cache[path.resolve()] = snapshot
+    return snapshot
 
 
 def _write_upload_log_rows(log_path: Path, rows: list[dict[str, str]]) -> None:
@@ -619,18 +809,18 @@ def _write_upload_log_rows(log_path: Path, rows: list[dict[str, str]]) -> None:
 
 def delete_upload_log(upload_id: str, config: AppConfig) -> bool:
     with _csv_lock:
-        ensure_log_file(config.log_path)
-        with config.log_path.open("r", encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.DictReader(handle))
+        snapshot = _read_upload_log_snapshot_locked(config)
+        rows = [dict(row) for row in snapshot.rows]
         kept_rows = [row for row in rows if row.get("upload_id") != upload_id]
         deleted = len(kept_rows) != len(rows)
         if not deleted:
             return False
 
         deleted_row = next(row for row in rows if row.get("upload_id") == upload_id)
-        file_path = record_file_path(deleted_row)
+        file_path = record_file_path(deleted_row, config)
         should_delete_file = file_path.exists() and file_path.is_file()
         _write_upload_log_rows(config.log_path, kept_rows)
+        _store_upload_log_snapshot_locked(config.log_path, kept_rows)
         if should_delete_file:
             try:
                 file_path.unlink()
@@ -638,6 +828,7 @@ def delete_upload_log(upload_id: str, config: AppConfig) -> bool:
                 pass
             except OSError:
                 _write_upload_log_rows(config.log_path, rows)
+                _store_upload_log_snapshot_locked(config.log_path, rows)
                 raise
         return True
 
@@ -659,8 +850,18 @@ def is_delete_allowed(request_ip: str | None, config: AppConfig) -> bool:
     return normalized_request_ip in allowed
 
 
-def record_file_path(row: dict[str, str]) -> Path:
-    return Path(row.get("storage_path", "")).expanduser().resolve()
+def record_file_path(row: dict[str, str], config: AppConfig) -> Path:
+    raw_path = row.get("storage_path", "").strip()
+    if not raw_path:
+        raise ValueError("업로드 이력의 저장 경로가 비어 있습니다.")
+    try:
+        file_path = Path(raw_path).expanduser().resolve()
+        storage_root = config.storage_root.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("업로드 이력의 저장 경로를 확인할 수 없습니다.") from exc
+    if file_path == storage_root or not file_path.is_relative_to(storage_root):
+        raise ValueError("업로드 이력의 저장 경로가 기준 폴더 밖을 가리킵니다.")
+    return file_path
 
 
 def cleanup_created_file(file_path: Path, existed_before: bool) -> None:
@@ -740,6 +941,13 @@ def append_network_check_log(row: dict[str, str], config: AppConfig) -> None:
     with _network_check_csv_lock:
         ensure_network_check_log_file(config.network_check_log_path)
         _append_csv_row_with_rollback(config.network_check_log_path, NETWORK_CHECK_FIELDS, row)
+        try:
+            archive_csv_history(config.network_check_log_path, NETWORK_CHECK_FIELDS)
+        except (OSError, CsvIntegrityError):
+            logging.getLogger(__name__).warning(
+                "measurement_csv_archive_failed",
+                exc_info=True,
+            )
 
 
 def read_network_check_log(config: AppConfig, limit: int | None = None) -> list[dict[str, str]]:
@@ -759,6 +967,8 @@ def create_app(
     probe_service: ProbeService | None = None,
     measurement_gate: NetworkMeasurementGate | None = None,
     probe_client_bundle_path: str | os.PathLike[str] | None = None,
+    diagnostic_logger: logging.Logger | None = None,
+    health_check_cache: TimedSnapshotCache | None = None,
 ) -> Flask:
     app = Flask(
         __name__,
@@ -766,7 +976,20 @@ def create_app(
         static_folder=str(RESOURCE_ROOT / "static"),
     )
     config = app_config or load_config(config_path)
-    ensure_directories(config)
+    active_logger = diagnostic_logger or configure_diagnostic_logger(config.log_path.parent)
+    attach_diagnostic_handlers(app.logger, active_logger)
+    try:
+        integrity_results = ensure_directories(config)
+    except Exception:
+        active_logger.exception("startup_storage_validation_failed")
+        raise
+    for result in integrity_results:
+        if result.repaired:
+            active_logger.warning(
+                "csv_tail_recovered file=%s backup=%s",
+                result.path.name,
+                result.backup_path.name if result.backup_path else "",
+            )
     active_gate = measurement_gate or NetworkMeasurementGate()
     active_probe_service = probe_service or ProbeService(
         config=build_probe_config(config),
@@ -793,16 +1016,112 @@ def create_app(
     app.extensions["sustained_network_check"] = sustained_manager
     app.extensions["network_measurement_gate"] = active_gate
     app.extensions["network_probe"] = active_probe_service
+    app.extensions["diagnostic_logger"] = active_logger
+    active_health_cache = health_check_cache or TimedSnapshotCache()
+    app.extensions["health_check_cache"] = active_health_cache
+    active_logger.info(
+        "application_initialized version=%s web_port=%s probe_enabled=%s probe_port=%s",
+        APP_VERSION,
+        config.port,
+        config.network_probe_enabled,
+        config.network_probe_port,
+    )
 
     @app.get("/api/health")
     def health_check():
+        def expensive_checks():
+            upload_storage = check_storage_health(config.storage_root)
+            metadata_storage = check_storage_health(config.log_path.parent)
+            csv_specs = (
+                ("upload_log", config.log_path, CSV_FIELDS, _csv_lock),
+                (
+                    "network_check_log",
+                    config.network_check_log_path,
+                    NETWORK_CHECK_FIELDS,
+                    _network_check_csv_lock,
+                ),
+                (
+                    "network_check_session_log",
+                    config.network_check_session_log_path,
+                    SUSTAINED_LOG_FIELDS,
+                    sustained_manager.storage_lock,
+                ),
+                (
+                    "network_probe_log",
+                    config.network_probe_log_path,
+                    PROBE_LOG_FIELDS,
+                    active_probe_service.storage_lock,
+                ),
+            )
+            csv_files = {}
+            for name, path, fieldnames, lock in csv_specs:
+                with lock:
+                    result = inspect_csv_integrity(path, fieldnames)
+                csv_files[name] = "ok" if result.valid else result.issue
+            return {
+                "upload_storage": upload_storage,
+                "metadata_storage": metadata_storage,
+                "csv_files": csv_files,
+            }
+
+        cached_checks = active_health_cache.get(expensive_checks)
+        upload_storage = cached_checks["upload_storage"]
+        metadata_storage = cached_checks["metadata_storage"]
+        csv_files = cached_checks["csv_files"]
+        csv_ok = all(value == "ok" for value in csv_files.values())
+
+        try:
+            probe = active_probe_service.status_payload()
+        except Exception:
+            active_logger.exception("health_probe_status_failed")
+            probe = {
+                "enabled": config.network_probe_enabled,
+                "available": False,
+                "port": config.network_probe_port,
+                "error": "TCP 측정 서버 상태를 확인할 수 없습니다.",
+            }
+        probe_ok = not probe["enabled"] or probe["available"]
+        measurement = active_gate.status()
+        storage_ok = all(
+            item["writable"] and item["free_bytes"] >= 0 and not item["low_space"]
+            for item in (upload_storage, metadata_storage)
+        )
+        ready = storage_ok and csv_ok and probe_ok and not measurement["long_running"]
         response = jsonify(
             {
                 "app": APP_ID,
-                "status": "ok",
+                "status": "ok" if ready else "degraded",
                 "port": config.port,
                 "version": APP_VERSION,
                 "probe_protocol_version": PROBE_PROTOCOL_VERSION,
+                "checks": {
+                    "storage": {
+                        "status": "ok" if storage_ok else "degraded",
+                        "upload_writable": upload_storage["writable"],
+                        "metadata_writable": metadata_storage["writable"],
+                        "upload_free_bytes": upload_storage["free_bytes"],
+                        "metadata_free_bytes": metadata_storage["free_bytes"],
+                        "warning_below_bytes": LOW_FREE_SPACE_WARNING_BYTES,
+                        "low_space": bool(
+                            upload_storage["low_space"] or metadata_storage["low_space"]
+                        ),
+                    },
+                    "csv": {
+                        "status": "ok" if csv_ok else "degraded",
+                        "files": csv_files,
+                    },
+                    "tcp_probe": {
+                        "status": "ok" if probe_ok else "degraded",
+                        "enabled": probe["enabled"],
+                        "available": probe["available"],
+                        "port": probe["port"],
+                        "error": probe["error"],
+                    },
+                    "measurement": {
+                        "status": "warning" if measurement["long_running"] else "ok",
+                        **measurement,
+                    },
+                },
             }
         )
         response.headers["Cache-Control"] = "no-store"
@@ -850,8 +1169,8 @@ def create_app(
                 status="failure",
                 error="네트워크 체크 업로드 세션이 만료되었습니다.",
             )
-        except Exception as exc:
-            print(f"네트워크 체크 업로드 세션 만료 기록 실패: {exc}", file=sys.stderr)
+        except Exception:
+            active_logger.exception("network_check_upload_expiry_record_failed")
 
     def cleanup_expired_upload_sessions() -> None:
         now = time.perf_counter()
@@ -901,6 +1220,22 @@ def create_app(
 
     @app.post("/upload")
     def upload():
+        try:
+            ensure_storage_capacity(
+                config.storage_root,
+                required_bytes=request.content_length or 0,
+            )
+            ensure_storage_capacity(config.log_path.parent)
+        except InsufficientStorageError:
+            active_logger.warning("upload_rejected_insufficient_storage stage=preflight")
+            return render_index(
+                status_code=507,
+                error=(
+                    "서버 저장 공간이 부족하여 업로드할 수 없습니다. "
+                    "서버 PC의 디스크 공간을 확보한 뒤 다시 시도하세요."
+                ),
+            )
+
         uploaded_file = request.files.get("file")
         memo = request.form.get("memo", "").strip()
         storage_subdir_input = request.form.get("storage_subdir", "")
@@ -953,7 +1288,11 @@ def create_app(
 
         target_committed = False
         try:
-            commit_uploaded_file(uploaded_file, reservation)
+            commit_uploaded_file(
+                uploaded_file,
+                reservation,
+                storage_root=config.storage_root,
+            )
             target_committed = True
 
             download_url = build_download_url(reservation.upload_id, config)
@@ -968,9 +1307,33 @@ def create_app(
                 "download_url": download_url,
             }
             append_upload_log(row, config)
-        except Exception:
+        except InsufficientStorageError:
+            active_logger.warning("upload_rejected_insufficient_storage stage=write")
             if target_committed:
                 cleanup_created_file(reservation.target_path, existed_before=False)
+            return render_index(
+                status_code=507,
+                error=(
+                    "업로드 중 서버 저장 공간이 부족해져 파일을 저장하지 않았습니다. "
+                    "디스크 공간을 확보한 뒤 다시 시도하세요."
+                ),
+                storage_subdir=normalized_subdir,
+                memo=memo,
+            )
+        except Exception as exc:
+            active_logger.exception("upload_transaction_failed")
+            if target_committed:
+                cleanup_created_file(reservation.target_path, existed_before=False)
+            if is_storage_full_error(exc):
+                return render_index(
+                    status_code=507,
+                    error=(
+                        "업로드 처리 중 서버 저장 공간이 부족해졌습니다. "
+                        "디스크 공간을 확보한 뒤 다시 시도하세요."
+                    ),
+                    storage_subdir=normalized_subdir,
+                    memo=memo,
+                )
             raise
         finally:
             release_upload_reservation(reservation)
@@ -988,7 +1351,10 @@ def create_app(
         row = find_upload(upload_id, config)
         if not row:
             abort(404)
-        file_path = record_file_path(row)
+        try:
+            file_path = record_file_path(row, config)
+        except ValueError:
+            abort(404)
         if not file_path.exists() or not file_path.is_file():
             abort(404)
         response = send_file(
@@ -1008,8 +1374,11 @@ def create_app(
         row = find_upload(upload_id, config)
         if not row:
             abort(404)
-        if not delete_upload_log(upload_id, config):
-            abort(404)
+        try:
+            if not delete_upload_log(upload_id, config):
+                abort(404)
+        except ValueError as exc:
+            abort(409, description=str(exc))
         return redirect(url_for("index", deleted="1"))
 
     @app.get("/network-check/download")
@@ -1230,10 +1599,32 @@ def create_app(
 
 def run_smoke_check(config_path: str | os.PathLike[str] | None = None) -> int:
     config = load_config(config_path)
-    ensure_directories(config)
-    app = create_app(config_path)
-    with app.test_client() as client:
-        response = client.get("/")
+    instance_lock = DataDirectoryLock(
+        config.log_path.parent / ".internal-upload.instance.lock"
+    )
+    try:
+        instance_lock.acquire()
+    except InstanceLockError as exc:
+        print(f"Smoke check failed: {exc}", file=sys.stderr)
+        return 1
+    try:
+        ensure_directories(config)
+        with tempfile.TemporaryDirectory(prefix="internal-upload-smoke-") as temporary_root:
+            diagnostic_logger = configure_diagnostic_logger(Path(temporary_root))
+            app = None
+            try:
+                app = create_app(config_path, diagnostic_logger=diagnostic_logger)
+                with app.test_client() as client:
+                    response = client.get("/")
+            finally:
+                if app is not None:
+                    detach_diagnostic_handlers(app.logger, diagnostic_logger)
+                close_diagnostic_logger(diagnostic_logger)
+    except (CsvIntegrityError, OSError) as exc:
+        print(f"Smoke check failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        instance_lock.release()
     if response.status_code != 200:
         print(f"Smoke check failed: GET / returned {response.status_code}", file=sys.stderr)
         return 1
@@ -1306,7 +1697,6 @@ def main(argv: list[str] | None = None) -> int:
     configured = load_config(config_path)
     if migration_required and migration_failed:
         configured = replace(configured, network_probe_enabled=True)
-    ensure_directories(configured)
     try:
         resolution = resolve_startup_port(
             configured.host,
@@ -1328,6 +1718,21 @@ def main(argv: list[str] | None = None) -> int:
         print_server_addresses(configured, existing=True)
         print("중복 서버를 시작하지 않고 종료합니다.")
         return 0
+
+    instance_lock = DataDirectoryLock(
+        configured.log_path.parent / ".internal-upload.instance.lock"
+    )
+    try:
+        instance_lock.acquire()
+    except InstanceLockError as exc:
+        print(f"사내 업로드 서버 시작 실패: {exc}", file=sys.stderr)
+        return 2
+    try:
+        diagnostic_logger = configure_diagnostic_logger(configured.log_path.parent)
+    except OSError as exc:
+        instance_lock.release()
+        print(f"진단 로그를 준비할 수 없어 서버를 시작하지 않습니다: {exc}", file=sys.stderr)
+        return 2
 
     runtime_base_url, _ = rewrite_base_url_port(
         configured.base_url,
@@ -1356,20 +1761,23 @@ def main(argv: list[str] | None = None) -> int:
             probe_port_error = str(exc)
 
     measurement_gate = NetworkMeasurementGate()
-    probe_service = ProbeService(
-        config=build_probe_config(active_config),
-        measurement_gate=measurement_gate,
-        normalize_ip=normalize_ip,
-    )
-    if probe_port_error:
-        probe_service.start_error = probe_port_error
+    probe_service = None
     web_server = None
+    flask_app = None
     try:
+        probe_service = ProbeService(
+            config=build_probe_config(active_config),
+            measurement_gate=measurement_gate,
+            normalize_ip=normalize_ip,
+        )
+        if probe_port_error:
+            probe_service.start_error = probe_port_error
         flask_app = create_app(
             config_path,
             app_config=active_config,
             probe_service=probe_service,
             measurement_gate=measurement_gate,
+            diagnostic_logger=diagnostic_logger,
         )
         try:
             web_server = make_server(
@@ -1412,8 +1820,13 @@ def main(argv: list[str] | None = None) -> int:
             if probe_port_error:
                 print(f"TCP 전송 성능 측정 서버 시작 실패: {probe_port_error}", file=sys.stderr)
                 print("파일 업로드 웹 서버는 계속 실행합니다.", file=sys.stderr)
+                diagnostic_logger.error("probe_server_start_failed reason=port_resolution")
             elif probe_service.start():
                 print(f"TCP 전송 성능 측정 서버가 {active_config.network_probe_port} 포트에서 시작되었습니다.")
+                diagnostic_logger.info(
+                    "probe_server_started port=%s",
+                    active_config.network_probe_port,
+                )
                 if probe_port_resolution and probe_port_resolution.changed:
                     try:
                         persist_probe_port_change(
@@ -1433,17 +1846,28 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"TCP 전송 성능 측정 서버 시작 실패: {probe_service.start_error}", file=sys.stderr)
                 print("파일 업로드 웹 서버는 계속 실행합니다.", file=sys.stderr)
+                diagnostic_logger.error("probe_server_start_failed reason=bind")
 
         print_server_addresses(active_config)
         print("종료하려면 Ctrl+C를 누르세요.")
+        diagnostic_logger.info("web_server_started port=%s", active_config.port)
         try:
             web_server.serve_forever()
         except KeyboardInterrupt:
             print("사내 업로드 서버를 종료합니다.")
+    except CsvIntegrityError as exc:
+        print(f"사내 업로드 서버 시작 실패: {exc}", file=sys.stderr)
+        return 2
     finally:
-        probe_service.stop()
+        if probe_service is not None:
+            probe_service.stop()
         if web_server is not None:
             web_server.server_close()
+        diagnostic_logger.info("application_stopped")
+        if flask_app is not None:
+            detach_diagnostic_handlers(flask_app.logger, diagnostic_logger)
+        close_diagnostic_logger(diagnostic_logger)
+        instance_lock.release()
     return 0
 
 

@@ -45,3 +45,23 @@ def test_write_json_atomically_cleans_temporary_file_when_replace_fails(tmp_path
 
     assert not result_path.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_prune_old_json_results_keeps_newest_files_only(tmp_path):
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"session-{index}.json"
+        path.write_text("{}", encoding="utf-8")
+        os.utime(path, ns=(index + 1, index + 1))
+        paths.append(path)
+    (tmp_path / "README_RESULTS_KO.txt").write_text("keep", encoding="utf-8")
+
+    removed = result_storage.prune_old_json_results(tmp_path, max_files=3)
+
+    assert removed == 2
+    assert sorted(path.name for path in tmp_path.glob("*.json")) == [
+        "session-2.json",
+        "session-3.json",
+        "session-4.json",
+    ]
+    assert (tmp_path / "README_RESULTS_KO.txt").exists()

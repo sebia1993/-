@@ -15,7 +15,8 @@ from typing import Any, Callable
 
 from app_version import APP_VERSION
 from network_measurement import NetworkMeasurementGate
-from result_storage import write_json_atomically
+from result_storage import prune_old_json_results, write_json_atomically
+from runtime_stability import CsvIntegrityError, archive_csv_history
 
 from .models import (
     PROBE_CONNECTIVITY_INTERVAL_SECONDS,
@@ -948,6 +949,11 @@ class ProbeService:
                 finally:
                     path.unlink(missing_ok=True)
                 raise
+            try:
+                archive_csv_history(self.config.log_path, PROBE_LOG_FIELDS)
+            except (OSError, CsvIntegrityError):
+                pass
+            prune_old_json_results(self.config.results_root)
 
     def _validated_side_result(self, value: Any, phase: str) -> dict[str, Any]:
         if phase not in {"upload", "download"} or not isinstance(value, dict):

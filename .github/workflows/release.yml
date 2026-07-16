@@ -6,7 +6,7 @@ on:
       version:
         description: "Release version tag, for example v0.3.0"
         required: true
-        default: "v0.4.4-rc.1"
+        default: "v0.4.5-rc.1"
   push:
     tags:
       - "v*"
@@ -40,7 +40,7 @@ jobs:
       - name: Run source checks
         shell: pwsh
         run: |
-          python -m compileall app_version.py app.py probe_client.py startup_ports.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
+          python -m compileall app_version.py app.py bounded_server.py probe_client.py startup_ports.py runtime_stability.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
           node --check static/network_check.js
           node --check static/network_sustained.js
           node --check static/network_probe.js
@@ -58,7 +58,7 @@ jobs:
           $zip = "dist/internal-upload_${env:RELEASE_VERSION}_windows.zip"
           $sha = "$zip.sha256"
           $notes = "dist/release_notes_${env:RELEASE_VERSION}.md"
-          $title = "$env:RELEASE_VERSION - 사내 업로드 Windows 보안 구조 개선"
+          $title = "$env:RELEASE_VERSION - 사내 업로드 Windows 안정성 개선"
 
           if (-not (Test-Path $zip)) {
             throw "Missing release ZIP: $zip"
