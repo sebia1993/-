@@ -20,10 +20,10 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import quote, urlparse
 
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
 
 from app_version import APP_VERSION
-from bounded_server import make_bounded_server as make_server
+from bounded_server import WEB_SHUTDOWN_DRAIN_SECONDS, make_bounded_server as make_server
 from network_sustained import SUSTAINED_LOG_FIELDS, create_sustained_blueprint, ensure_sustained_storage
 from network_measurement import NetworkMeasurementGate
 from network_probe.models import PROBE_PROTOCOL_VERSION, ProbeConfig
@@ -39,12 +39,15 @@ from runtime_stability import (
     InsufficientStorageError,
     InstanceLockError,
     TimedSnapshotCache,
+    UploadAdmissionController,
+    UploadConcurrencyError,
     archive_csv_history,
     attach_diagnostic_handlers,
     check_storage_health,
     close_diagnostic_logger,
     configure_diagnostic_logger,
     detach_diagnostic_handlers,
+    durable_replace,
     ensure_csv_integrity,
     ensure_storage_capacity,
     inspect_csv_integrity,
@@ -628,6 +631,7 @@ def commit_uploaded_file(
     reservation: UploadReservation,
     *,
     storage_root: Path | None = None,
+    progress_callback=None,
 ) -> None:
     capacity_path = storage_root or reservation.temporary_path.parent
     source = getattr(uploaded_file, "stream", uploaded_file)
@@ -647,10 +651,12 @@ def commit_uploaded_file(
                 if not chunk:
                     break
                 handle.write(chunk)
+                if progress_callback is not None:
+                    progress_callback(len(chunk))
                 bytes_since_space_check += len(chunk)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(reservation.temporary_path, reservation.target_path)
+        durable_replace(reservation.temporary_path, reservation.target_path)
     except OSError as exc:
         if is_storage_full_error(exc):
             raise InsufficientStorageError(
@@ -802,7 +808,7 @@ def _write_upload_log_rows(log_path: Path, rows: list[dict[str, str]]) -> None:
             writer.writerows(rows)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, log_path)
+        durable_replace(temporary_path, log_path)
     finally:
         temporary_path.unlink(missing_ok=True)
 
@@ -969,6 +975,7 @@ def create_app(
     probe_client_bundle_path: str | os.PathLike[str] | None = None,
     diagnostic_logger: logging.Logger | None = None,
     health_check_cache: TimedSnapshotCache | None = None,
+    upload_admission_controller: UploadAdmissionController | None = None,
 ) -> Flask:
     app = Flask(
         __name__,
@@ -1017,6 +1024,11 @@ def create_app(
     app.extensions["network_measurement_gate"] = active_gate
     app.extensions["network_probe"] = active_probe_service
     app.extensions["diagnostic_logger"] = active_logger
+    active_upload_admission = upload_admission_controller or UploadAdmissionController(
+        config.storage_root,
+        capacity_check=lambda path, **kwargs: ensure_storage_capacity(path, **kwargs),
+    )
+    app.extensions["upload_admission"] = active_upload_admission
     active_health_cache = health_check_cache or TimedSnapshotCache()
     app.extensions["health_check_cache"] = active_health_cache
     active_logger.info(
@@ -1082,6 +1094,7 @@ def create_app(
             }
         probe_ok = not probe["enabled"] or probe["available"]
         measurement = active_gate.status()
+        upload_admission = active_upload_admission.status()
         storage_ok = all(
             item["writable"] and item["free_bytes"] >= 0 and not item["low_space"]
             for item in (upload_storage, metadata_storage)
@@ -1120,6 +1133,10 @@ def create_app(
                     "measurement": {
                         "status": "warning" if measurement["long_running"] else "ok",
                         **measurement,
+                    },
+                    "file_uploads": {
+                        "status": "busy" if upload_admission["at_capacity"] else "ok",
+                        **upload_admission,
                     },
                 },
             }
@@ -1218,6 +1235,40 @@ def create_app(
     def index():
         return render_index()
 
+    @app.before_request
+    def acquire_file_upload_capacity():
+        if request.endpoint != "upload":
+            return None
+        try:
+            g.file_upload_capacity = active_upload_admission.acquire(
+                request.content_length or 0
+            )
+        except UploadConcurrencyError:
+            active_logger.warning("upload_rejected_concurrency_limit")
+            return render_index(
+                status_code=503,
+                error=(
+                    "동시에 처리할 수 있는 파일 업로드 수를 초과했습니다. "
+                    "잠시 후 다시 시도하세요."
+                ),
+            )
+        except InsufficientStorageError:
+            active_logger.warning("upload_rejected_aggregate_storage_reservation")
+            return render_index(
+                status_code=507,
+                error=(
+                    "진행 중인 업로드를 포함하면 서버 저장 공간이 부족합니다. "
+                    "다른 업로드가 끝나거나 디스크 공간을 확보한 뒤 다시 시도하세요."
+                ),
+            )
+        return None
+
+    @app.teardown_request
+    def release_file_upload_capacity(_error=None):
+        reservation = getattr(g, "file_upload_capacity", None)
+        if reservation is not None:
+            reservation.release()
+
     @app.post("/upload")
     def upload():
         try:
@@ -1292,6 +1343,7 @@ def create_app(
                 uploaded_file,
                 reservation,
                 storage_root=config.storage_root,
+                progress_callback=g.file_upload_capacity.record_written,
             )
             target_committed = True
 
@@ -1859,6 +1911,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"사내 업로드 서버 시작 실패: {exc}", file=sys.stderr)
         return 2
     finally:
+        if web_server is not None:
+            web_server.begin_shutdown()
+            drained = web_server.wait_for_active_requests(
+                timeout_seconds=WEB_SHUTDOWN_DRAIN_SECONDS
+            )
+            if not drained:
+                print(
+                    "진행 중인 웹 요청이 30초 안에 끝나지 않아 연결을 종료합니다.",
+                    file=sys.stderr,
+                )
+                diagnostic_logger.warning(
+                    "web_shutdown_drain_timeout active_requests=%s",
+                    web_server.active_request_count,
+                )
         if probe_service is not None:
             probe_service.stop()
         if web_server is not None:

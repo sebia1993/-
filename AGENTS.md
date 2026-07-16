@@ -68,6 +68,8 @@ This is not a general-purpose file transfer service. Keep the scope small.
   verification helpers.
 - `.github/workflows/release.yml`: Windows runner workflow that builds and
   uploads the executable ZIP asset.
+- `.github/workflows/stability-windows.yml`: weekly 45-minute Windows upload,
+  TCP, and restart soak workflow.
 
 ## Validation Commands
 
@@ -89,6 +91,7 @@ On macOS in this workspace, use:
 .venv/bin/python -m compileall app_version.py app.py bounded_server.py probe_client.py startup_ports.py runtime_stability.py network_sustained.py sustained_excel.py excel_report.py network_measurement.py result_storage.py network_probe tests tools
 .venv/bin/python -m pytest -q
 .venv/bin/python tools/run_stability_fault_suite.py
+.venv/bin/python tools/run_windows_stability_soak.py --duration-minutes 0.01 --max-cycles 1
 ```
 
 ## README / Release Document Rules

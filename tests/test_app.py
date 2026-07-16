@@ -32,6 +32,7 @@ from runtime_stability import (
     DataDirectoryLock,
     InsufficientStorageError,
     TimedSnapshotCache,
+    UploadAdmissionController,
 )
 from tools.verify_release_zip import REQUIRED_FILES, verify_zip
 from tools.generate_security_artifacts import generate_security_artifacts
@@ -140,6 +141,33 @@ def test_upload_rejects_when_reserved_disk_space_is_unavailable(app_client, monk
     assert list(config.storage_root.rglob(f"{app_module.UPLOAD_ARTIFACT_PREFIX}*")) == []
 
 
+def test_upload_rejects_when_concurrent_upload_limit_is_reached(tmp_path):
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    controller = UploadAdmissionController(
+        config.storage_root,
+        max_concurrent=1,
+        reserve_bytes=0,
+        capacity_check=lambda *_args, **_kwargs: 10**12,
+    )
+    occupied = controller.acquire(1)
+    flask_app = create_app(
+        config_path,
+        upload_admission_controller=controller,
+    )
+    flask_app.config.update(TESTING=True)
+    try:
+        with flask_app.test_client() as client:
+            response = post_file(client, filename="busy.txt", content=b"payload")
+    finally:
+        occupied.release()
+
+    assert response.status_code == 503
+    assert "잠시 후 다시 시도" in response.get_data(as_text=True)
+    assert read_upload_log(config) == []
+    assert controller.status()["active_uploads"] == 0
+
+
 def test_upload_cleans_partial_file_when_space_runs_out_during_copy(
     app_client,
     monkeypatch,
@@ -222,7 +250,7 @@ def test_upload_fsyncs_temporary_file_before_atomic_replace(app_client, monkeypa
     client, config, _ = app_client
     events = []
     original_fsync = os.fsync
-    original_replace = os.replace
+    original_replace = app_module.durable_replace
 
     def recording_fsync(file_descriptor):
         events.append("fsync")
@@ -235,7 +263,7 @@ def test_upload_fsyncs_temporary_file_before_atomic_replace(app_client, monkeypa
         return original_replace(source, destination)
 
     monkeypatch.setattr(app_module.os, "fsync", recording_fsync)
-    monkeypatch.setattr(app_module.os, "replace", recording_replace)
+    monkeypatch.setattr(app_module, "durable_replace", recording_replace)
 
     response = post_file(client, filename="atomic.txt", content=b"complete")
 
@@ -247,14 +275,14 @@ def test_upload_fsyncs_temporary_file_before_atomic_replace(app_client, monkeypa
 
 def test_upload_replace_failure_removes_temporary_artifacts(app_client, monkeypatch):
     client, config, _ = app_client
-    original_replace = os.replace
+    original_replace = app_module.durable_replace
 
     def fail_upload_replace(source, destination):
         if Path(source).suffix == ".part":
             raise OSError("replace failed")
         return original_replace(source, destination)
 
-    monkeypatch.setattr(app_module.os, "replace", fail_upload_replace)
+    monkeypatch.setattr(app_module, "durable_replace", fail_upload_replace)
 
     with pytest.raises(OSError, match="replace failed"):
         post_file(client, filename="incomplete.txt", content=b"partial")
@@ -1112,6 +1140,13 @@ def test_health_endpoint_identifies_app_and_active_port(app_client):
     assert payload["checks"]["tcp_probe"]["enabled"] is True
     assert payload["checks"]["tcp_probe"]["available"] is False
     assert payload["checks"]["measurement"]["active"] is False
+    assert payload["checks"]["file_uploads"] == {
+        "status": "ok",
+        "active_uploads": 0,
+        "max_concurrent_uploads": 4,
+        "reserved_remaining_bytes": 0,
+        "at_capacity": False,
+    }
     assert len(response.data) <= 4097
     assert response.headers["Cache-Control"] == "no-store"
 

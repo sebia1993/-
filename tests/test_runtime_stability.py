@@ -13,6 +13,8 @@ from runtime_stability import (
     InsufficientStorageError,
     InstanceLockError,
     TimedSnapshotCache,
+    UploadAdmissionController,
+    UploadConcurrencyError,
     archive_csv_history,
     attach_diagnostic_handlers,
     check_storage_health,
@@ -408,6 +410,122 @@ def test_storage_capacity_fails_closed_when_usage_is_unavailable(tmp_path, monke
 
     with pytest.raises(InsufficientStorageError, match="확인할 수 없습니다"):
         ensure_storage_capacity(tmp_path, reserve_bytes=0)
+
+
+def test_upload_admission_reserves_aggregate_remaining_bytes(tmp_path):
+    checked_required = []
+
+    def capacity_check(_path, *, required_bytes, reserve_bytes):
+        assert reserve_bytes == 0
+        checked_required.append(required_bytes)
+        if required_bytes > 500:
+            raise InsufficientStorageError("aggregate full")
+        return 1_000
+
+    controller = UploadAdmissionController(
+        tmp_path,
+        max_concurrent=2,
+        reserve_bytes=0,
+        capacity_check=capacity_check,
+    )
+    first = controller.acquire(300)
+
+    with pytest.raises(InsufficientStorageError, match="aggregate full"):
+        controller.acquire(300)
+
+    first.record_written(250)
+    second = controller.acquire(300)
+    assert controller.status() == {
+        "active_uploads": 2,
+        "max_concurrent_uploads": 2,
+        "reserved_remaining_bytes": 350,
+        "at_capacity": True,
+    }
+    assert checked_required == [300, 600, 350]
+
+    first.release()
+    first.release()
+    second.release()
+    assert controller.status()["active_uploads"] == 0
+
+
+def test_upload_admission_rejects_requests_over_concurrency_limit(tmp_path):
+    controller = UploadAdmissionController(
+        tmp_path,
+        max_concurrent=1,
+        reserve_bytes=0,
+        capacity_check=lambda *_args, **_kwargs: 1_000,
+    )
+    active = controller.acquire(0)
+    try:
+        with pytest.raises(UploadConcurrencyError, match="업로드 수"):
+            controller.acquire(0)
+    finally:
+        active.release()
+
+
+def test_durable_replace_fsyncs_parent_after_posix_replace(tmp_path, monkeypatch):
+    source = tmp_path / "source.tmp"
+    destination = tmp_path / "target.csv"
+    source.write_text("new", encoding="utf-8")
+    destination.write_text("old", encoding="utf-8")
+    events = []
+    original_replace = stability_module.os.replace
+
+    def recording_replace(actual_source, actual_destination):
+        events.append(("replace", Path(actual_source), Path(actual_destination)))
+        original_replace(actual_source, actual_destination)
+
+    def recording_directory_fsync(directory):
+        events.append(("directory_fsync", Path(directory)))
+
+    monkeypatch.setattr(stability_module.os, "replace", recording_replace)
+    monkeypatch.setattr(stability_module, "_fsync_directory", recording_directory_fsync)
+
+    stability_module.durable_replace(source, destination, _platform_name="posix")
+
+    assert destination.read_text(encoding="utf-8") == "new"
+    assert events == [
+        ("replace", source.resolve(), destination.resolve()),
+        ("directory_fsync", destination.parent.resolve()),
+    ]
+
+
+def test_windows_durable_replace_uses_replace_and_write_through_flags(tmp_path, monkeypatch):
+    source = (tmp_path / "source.tmp").resolve()
+    destination = (tmp_path / "target.csv").resolve()
+    calls = []
+    monkeypatch.setattr(
+        stability_module,
+        "_call_move_file_ex",
+        lambda actual_source, actual_destination, flags: calls.append(
+            (actual_source, actual_destination, flags)
+        ),
+    )
+
+    stability_module._windows_durable_replace(source, destination)
+
+    assert calls == [
+        (
+            source,
+            destination,
+            stability_module.MOVEFILE_REPLACE_EXISTING
+            | stability_module.MOVEFILE_WRITE_THROUGH,
+        )
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows MoveFileExW 검증")
+def test_windows_durable_replace_replaces_existing_file(tmp_path):
+    source = tmp_path / "source.tmp"
+    destination = tmp_path / "target.csv"
+    source.write_text("new", encoding="utf-8")
+    destination.write_text("old", encoding="utf-8")
+
+    stability_module.durable_replace(source, destination)
+
+    assert destination.read_text(encoding="utf-8") == "new"
+    assert not source.exists()
 
 
 def test_storage_full_error_recognizes_enospc_only():

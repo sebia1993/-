@@ -11,7 +11,7 @@ def test_write_json_atomically_fsyncs_before_replace(tmp_path, monkeypatch):
     result_path = tmp_path / "results" / "session.json"
     events = []
     original_fsync = os.fsync
-    original_replace = os.replace
+    original_replace = result_storage.durable_replace
 
     def recording_fsync(file_descriptor):
         events.append("fsync")
@@ -23,7 +23,7 @@ def test_write_json_atomically_fsyncs_before_replace(tmp_path, monkeypatch):
         return original_replace(source, destination)
 
     monkeypatch.setattr(result_storage.os, "fsync", recording_fsync)
-    monkeypatch.setattr(result_storage.os, "replace", recording_replace)
+    monkeypatch.setattr(result_storage, "durable_replace", recording_replace)
 
     result_storage.write_json_atomically(result_path, {"status": "completed"})
 
@@ -38,7 +38,7 @@ def test_write_json_atomically_cleans_temporary_file_when_replace_fails(tmp_path
     def fail_replace(_source: Path, _destination: Path):
         raise OSError("replace failed")
 
-    monkeypatch.setattr(result_storage.os, "replace", fail_replace)
+    monkeypatch.setattr(result_storage, "durable_replace", fail_replace)
 
     with pytest.raises(OSError, match="replace failed"):
         result_storage.write_json_atomically(result_path, {"status": "failed"})

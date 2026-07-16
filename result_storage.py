@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from runtime_stability import durable_replace
+
 
 RESULT_JSON_MAX_FILES = 1_000
 
@@ -19,8 +21,7 @@ def write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
+        durable_replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
 

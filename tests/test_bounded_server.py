@@ -84,3 +84,55 @@ def test_bounded_server_rejects_excess_slow_clients_and_recovers_capacity():
         server_thread.join(timeout=3)
 
     assert not server_thread.is_alive()
+
+
+def test_bounded_server_rejects_new_requests_and_drains_active_request():
+    request_started = threading.Event()
+    release_request = threading.Event()
+
+    def blocking_app(_environ, start_response):
+        request_started.set()
+        release_request.wait(timeout=3)
+        return simple_app(_environ, start_response)
+
+    server = make_bounded_server(
+        "127.0.0.1",
+        0,
+        blocking_app,
+        max_request_threads=2,
+        request_timeout_seconds=2,
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    active = socket.create_connection(server.server_address, timeout=2)
+    active.settimeout(3)
+    try:
+        active.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        assert request_started.wait(timeout=2)
+        assert server.active_request_count == 1
+
+        server.begin_shutdown()
+        assert server.is_draining is True
+
+        rejected = socket.create_connection(server.server_address, timeout=2)
+        rejected.settimeout(2)
+        rejected.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        rejected_payload = receive_all(rejected)
+        rejected.close()
+
+        assert b"503 Service Unavailable" in rejected_payload
+        assert b"Server is shutting down" in rejected_payload
+        assert server.wait_for_active_requests(timeout_seconds=0.05) is False
+
+        release_request.set()
+        assert receive_all(active).endswith(b"ok")
+        assert server.wait_for_active_requests(timeout_seconds=2) is True
+        assert server.active_request_count == 0
+    finally:
+        release_request.set()
+        active.close()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+
+    assert not server_thread.is_alive()

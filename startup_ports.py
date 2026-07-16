@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
+from runtime_stability import durable_replace
+
 
 APP_ID = "internal-upload"
 APP_SECTION = "app"
@@ -306,7 +308,7 @@ def _write_parser(path: Path, parser: ConfigParser) -> None:
             temporary_path = Path(handle.name)
         if original_mode is not None:
             os.chmod(temporary_path, original_mode)
-        os.replace(temporary_path, path)
+        durable_replace(temporary_path, path)
     except OSError:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)

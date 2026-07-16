@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 import errno
 import json
 import logging
@@ -11,6 +12,7 @@ import socket
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -29,6 +31,10 @@ class InsufficientStorageError(RuntimeError):
     pass
 
 
+class UploadConcurrencyError(RuntimeError):
+    pass
+
+
 DIAGNOSTIC_LOG_MAX_BYTES = 2 * 1024 * 1024
 DIAGNOSTIC_LOG_BACKUP_COUNT = 5
 LOW_FREE_SPACE_WARNING_BYTES = 1024 * 1024 * 1024
@@ -38,6 +44,10 @@ MEASUREMENT_CSV_COMPACT_MIN_BYTES = 8 * 1024 * 1024
 MEASUREMENT_CSV_MAX_ACTIVE_ROWS = 10_000
 MEASUREMENT_CSV_KEEP_ROWS = 5_000
 HEALTH_CHECK_CACHE_TTL_SECONDS = 5.0
+UPLOAD_MAX_CONCURRENT = 4
+MOVEFILE_REPLACE_EXISTING = 0x1
+MOVEFILE_WRITE_THROUGH = 0x8
+WINDOWS_DURABLE_REPLACE_FLAGS = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
 _ARCHIVE_MONTH_PATTERN = re.compile(r"^(\d{4})-(\d{2})")
 
 
@@ -82,6 +92,83 @@ class TimedSnapshotCache:
         with self._lock:
             self._created_at = None
             self._value = None
+
+
+class UploadAdmissionReservation:
+    def __init__(
+        self,
+        controller: "UploadAdmissionController",
+        reservation_id: str,
+    ) -> None:
+        self._controller = controller
+        self._reservation_id = reservation_id
+        self._released = False
+
+    def record_written(self, byte_count: int) -> None:
+        if not self._released:
+            self._controller._record_written(self._reservation_id, byte_count)
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._controller._release(self._reservation_id)
+
+
+class UploadAdmissionController:
+    def __init__(
+        self,
+        storage_root: Path,
+        *,
+        max_concurrent: int = UPLOAD_MAX_CONCURRENT,
+        reserve_bytes: int = STORAGE_RESERVE_BYTES,
+        capacity_check: Callable[..., int] | None = None,
+    ) -> None:
+        self.storage_root = storage_root.resolve()
+        self.max_concurrent = max(int(max_concurrent), 1)
+        self.reserve_bytes = max(int(reserve_bytes), 0)
+        self._capacity_check = capacity_check
+        self._lock = threading.Lock()
+        self._remaining_by_id: dict[str, int] = {}
+
+    def acquire(self, required_bytes: int) -> UploadAdmissionReservation:
+        required = max(int(required_bytes), 0)
+        with self._lock:
+            if len(self._remaining_by_id) >= self.max_concurrent:
+                raise UploadConcurrencyError("동시에 처리할 수 있는 업로드 수를 초과했습니다.")
+            total_required = sum(self._remaining_by_id.values()) + required
+            capacity_check = self._capacity_check or ensure_storage_capacity
+            capacity_check(
+                self.storage_root,
+                required_bytes=total_required,
+                reserve_bytes=self.reserve_bytes,
+            )
+            reservation_id = uuid.uuid4().hex
+            self._remaining_by_id[reservation_id] = required
+        return UploadAdmissionReservation(self, reservation_id)
+
+    def status(self) -> dict[str, int | bool]:
+        with self._lock:
+            active_uploads = len(self._remaining_by_id)
+            return {
+                "active_uploads": active_uploads,
+                "max_concurrent_uploads": self.max_concurrent,
+                "reserved_remaining_bytes": sum(self._remaining_by_id.values()),
+                "at_capacity": active_uploads >= self.max_concurrent,
+            }
+
+    def _record_written(self, reservation_id: str, byte_count: int) -> None:
+        written = max(int(byte_count), 0)
+        if written == 0:
+            return
+        with self._lock:
+            remaining = self._remaining_by_id.get(reservation_id)
+            if remaining is not None:
+                self._remaining_by_id[reservation_id] = max(remaining - written, 0)
+
+    def _release(self, reservation_id: str) -> None:
+        with self._lock:
+            self._remaining_by_id.pop(reservation_id, None)
 
 
 class _BinaryCsvLines:
@@ -316,8 +403,7 @@ def _write_csv_atomically(
             )
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
+        durable_replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
 
@@ -335,10 +421,55 @@ def _replace_with_prefix(path: Path, byte_count: int) -> None:
                 remaining -= len(chunk)
             destination.flush()
             os.fsync(destination.fileno())
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
+        durable_replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def durable_replace(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    _platform_name: str | None = None,
+) -> None:
+    source_path = Path(os.path.abspath(os.fspath(source)))
+    destination_path = Path(os.path.abspath(os.fspath(destination)))
+    platform_name = os.name if _platform_name is None else _platform_name
+    if platform_name == "nt":
+        _windows_durable_replace(source_path, destination_path)
+        return
+
+    os.replace(source_path, destination_path)
+    _fsync_directory(destination_path.parent)
+
+
+def _windows_durable_replace(source: Path, destination: Path) -> None:
+    _call_move_file_ex(
+        source,
+        destination,
+        WINDOWS_DURABLE_REPLACE_FLAGS,
+    )
+
+
+def _call_move_file_ex(source: Path, destination: Path, flags: int) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    move_file_ex = kernel32.MoveFileExW
+    move_file_ex.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+    )
+    move_file_ex.restype = ctypes.c_int
+    if move_file_ex(
+        str(source),
+        str(destination),
+        flags,
+    ):
+        return
+
+    error_code = ctypes.get_last_error()
+    message = ctypes.FormatError(error_code).strip() or "MoveFileExW failed"
+    raise OSError(error_code, message, str(destination))
 
 
 def _fsync_directory(directory: Path) -> None:

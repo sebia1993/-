@@ -307,7 +307,11 @@ def test_persist_probe_port_change_preserves_other_settings(tmp_path):
 def test_persist_port_change_replace_failure_keeps_original_file(tmp_path, monkeypatch):
     path = write_config(tmp_path)
     original = path.read_bytes()
-    monkeypatch.setattr(ports_module.os, "replace", lambda source, target: (_ for _ in ()).throw(OSError("busy")))
+    monkeypatch.setattr(
+        ports_module,
+        "durable_replace",
+        lambda source, target: (_ for _ in ()).throw(OSError("busy")),
+    )
 
     with pytest.raises(OSError, match="busy"):
         persist_port_change(path, 8000, 8001)
@@ -330,6 +334,18 @@ class FakeWebServer:
 
     def serve_forever(self):
         self.events.append("serve")
+
+    def begin_shutdown(self):
+        self.events.append("drain-start")
+
+    def wait_for_active_requests(self, timeout_seconds):
+        assert timeout_seconds == app_module.WEB_SHUTDOWN_DRAIN_SECONDS
+        self.events.append("drain-wait")
+        return True
+
+    @property
+    def active_request_count(self):
+        return 0
 
     def server_close(self):
         self.events.append("close")
@@ -359,7 +375,16 @@ def test_main_binds_selected_port_before_persisting_config(tmp_path, monkeypatch
 
     assert app_module.main(["--config", str(path)]) == 0
     assert read_config(path).getint("app", "PORT") == 8001
-    assert events == ["bind", "persist", "firewall", "addresses", "serve", "close"]
+    assert events == [
+        "bind",
+        "persist",
+        "firewall",
+        "addresses",
+        "serve",
+        "drain-start",
+        "drain-wait",
+        "close",
+    ]
 
 
 def test_main_bind_failure_does_not_change_config(tmp_path, monkeypatch):
@@ -475,6 +500,8 @@ def test_main_starts_probe_on_approved_fallback_then_persists_port(tmp_path, mon
         ("firewall", 5202),
         "addresses",
         "serve",
+        "drain-start",
+        "drain-wait",
         "probe-stop",
         "close",
     ]
@@ -514,7 +541,14 @@ def test_main_keeps_web_server_running_when_probe_port_change_is_declined(tmp_pa
     assert app_module.main(["--config", str(path)]) == 0
 
     assert read_config(path).getint("network_probe", "PORT") == 5201
-    assert events == ["addresses", "serve", "probe-stop", "close"]
+    assert events == [
+        "addresses",
+        "serve",
+        "drain-start",
+        "drain-wait",
+        "probe-stop",
+        "close",
+    ]
 
 
 def test_main_keeps_migrated_probe_enabled_when_config_write_fails(tmp_path, monkeypatch):
@@ -555,7 +589,14 @@ def test_main_keeps_migrated_probe_enabled_when_config_write_fails(tmp_path, mon
     parser = read_config(path)
     assert not parser.has_option("app", "CONFIG_VERSION")
     assert parser.getboolean("network_probe", "ENABLED") is False
-    assert events == ["probe-start", "serve", "probe-stop", "close"]
+    assert events == [
+        "probe-start",
+        "serve",
+        "drain-start",
+        "drain-wait",
+        "probe-stop",
+        "close",
+    ]
 
 
 def test_main_does_not_persist_fallback_probe_port_when_bind_fails(tmp_path, monkeypatch):
@@ -591,4 +632,11 @@ def test_main_does_not_persist_fallback_probe_port_when_bind_fails(tmp_path, mon
     assert app_module.main(["--config", str(path)]) == 0
 
     assert read_config(path).getint("network_probe", "PORT") == 5201
-    assert events == ["probe-start-failed", "serve", "probe-stop", "close"]
+    assert events == [
+        "probe-start-failed",
+        "serve",
+        "drain-start",
+        "drain-wait",
+        "probe-stop",
+        "close",
+    ]
