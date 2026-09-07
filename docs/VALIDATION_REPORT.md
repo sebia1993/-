@@ -8,12 +8,12 @@
 
 | 게이트 | 환경 | 주요 증거 |
 |---|---|---|
-| PR Validation | GitHub-hosted Windows | compileall, JavaScript syntax, pytest, secret scan, fault suite, pip check, v0.6.0 ZIP build/verifier |
+| PR Validation | GitHub-hosted Windows | compileall, JavaScript syntax, pytest, secret scan, fault suite, pip check, 현재 workflow에 지정된 버전의 ZIP build/verifier |
 | main push | GitHub-hosted Windows | PR Validation과 같은 source/package gate |
 | CodeQL default setup | GitHub-hosted Linux | Python/JavaScript security query |
 | Security Scan | GitHub-hosted Linux | tracked secret scan |
 | Stability Soak | GitHub-hosted Windows | 합성 업로드, 루프백 TCP self-check, 서버 재시작, process 자원 표본, 분석 후처리 |
-| Release | annotated tag의 GitHub-hosted Windows | tag/commit 일치, clean build, server/client self-check, ZIP/SHA/SBOM 게시 |
+| Release | annotated tag의 GitHub-hosted Windows | tag/commit 일치, clean build, server/client self-check, ZIP 게시 및 본문의 SHA-256·ZIP 내부 SBOM |
 
 ## P0 회귀 시나리오
 
@@ -22,8 +22,8 @@
 - Step Summary에는 최대 16KiB의 Markdown 핵심 결과만 기록
 - 원시 summary·analysis JSON과 Markdown은 artifact에 보존
 - 기능 soak 실패와 분석 후처리 실패를 서로 다른 단계로 표시
-- 비루프백 HTTP는 unauthenticated 요청 거부
-- cookie state-changing 요청은 CSRF 없으면 거부
+- 비루프백 웹 GET은 무로그인 접근을 허용하고 legacy token 환경 변수·파일을 인증에 사용하지 않음
+- 비루프백 브라우저의 state-changing 요청은 CSRF 없으면 거부; 루프백은 호환성 예외이며 TCP agent API는 별도 인증 경로 사용
 - TCP unsigned/tampered/expired/replayed frame은 상태 변경 전에 거부
 - enrollment token은 만료·재사용 시 거부
 
@@ -46,7 +46,7 @@ soak는 합성 파일과 루프백 TCP로 서버 기동/종료, 업로드 transa
 - 내부 checksum
 - launcher UTF-8 no-BOM
 
-게시 후에는 GitHub Release에서 ZIP·`.sha256`·독립 SBOM을 다시 내려받아 asset 이름, checksum과 ZIP verifier를 별도로 확인합니다.
+현재 게시 정책은 Windows ZIP asset 하나입니다. ZIP SHA-256은 릴리스 본문에 기록하고 SBOM·security manifest·내부 checksum은 ZIP에 포함합니다. 게시 후에는 ZIP을 다시 내려받아 본문의 SHA-256과 대조하고 ZIP verifier를 별도로 실행합니다. 과거 v0.6.0의 독립 `.sha256`·SBOM asset 구성을 현재 릴리스에 요구하지 않습니다. 정책은 [workflow](../.github/workflows/release.yml)와 [회귀 테스트](../tests/test_release_asset_policy.py)로 확인할 수 있습니다.
 
 ## 검증하지 않은 것
 

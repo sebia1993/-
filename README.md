@@ -12,6 +12,12 @@
 
 이 저장소는 장비를 제어하거나 회선 품질을 인증하지 않습니다. 파일 전송, 측정, 결과 보존, 재시작 복구와 배포 검증에 범위를 제한합니다.
 
+## 채용 검토를 위한 읽기 순서
+
+1. 아래 요약에서 **HTTP/TCP 비교 관측과 운영 데이터 복구**라는 문제 범위를 확인합니다.
+2. [설계 사례와 코드·테스트 근거](docs/PORTFOLIO_CASE_STUDY_KO.md)에서 측정 경쟁, 저장 중단, 접근 경계를 검토합니다.
+3. 같은 문서의 장비 없는 재현 명령과 [Windows 검증 실행](https://github.com/sebia1993/internal-network-transfer-diagnostics/actions/workflows/pr-validation.yml)을 확인합니다. 실행의 commit SHA가 검토하는 코드와 같은지도 확인합니다.
+
 ## 포트폴리오 요약
 
 | 질문 | 이 프로젝트가 보여주는 답 |
@@ -95,7 +101,7 @@ flowchart LR
 - 웹 응답: `Cache-Control`, CSP, `X-Frame-Options`, `X-Content-Type-Options` 등 보안 헤더 적용
 - 기존 `INTERNAL_TRANSFER_ACCESS_TOKEN` 환경 변수와 `data/.internal-transfer-access-token` 파일은 더 이상 생성·읽기·검증에 사용하지 않음
 
-중요: 웹 인증이 없으므로 이 프로그램을 인터넷이나 불특정 사용자에게 노출하면 안 됩니다. 신뢰할 수 있는 사내망/VPN에서 사용하고 Windows 방화벽·네트워크 ACL 등으로 접근 가능한 대역을 제한하세요. 내장 HTTP/TCP는 데이터 암호화를 제공하지 않으므로 신뢰 경계를 넘으면 TLS 역방향 프록시를 적용해야 합니다.
+중요: 웹 인증이 없으므로 이 프로그램을 인터넷이나 불특정 사용자에게 노출하면 안 됩니다. 신뢰할 수 있는 사내망/VPN에서 사용하고 Windows 방화벽·네트워크 ACL 등으로 접근 가능한 대역을 제한하세요. 내장 HTTP/TCP는 데이터 암호화를 제공하지 않습니다. HTTP에 TLS 역방향 프록시를 적용해도 별도 TCP 측정 포트는 암호화되지 않으므로 TCP 경로의 신뢰 구간·VPN 보호를 별도로 확인해야 합니다.
 
 자세한 위협·제한·운영 조치는 [보안 모델](docs/SECURITY_MODEL.md)에 있습니다.
 

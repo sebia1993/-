@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-    B["Browser / Operator"] -->|"login/Bearer + CSRF"| AUTH["Access Security"]
+    B["Browser / Operator"] -->|"무로그인 + 비루프백 CSRF"| AUTH["Access Security"]
     AUTH --> APP["Flask App"]
     APP --> BOUND["Bounded HTTP Server"]
     APP --> UPLOAD["Upload Service"]
@@ -35,7 +35,7 @@ Flask route, 설정 로딩, 파일 업로드/다운로드/삭제, 네트워크 �
 
 ### `access_security.py`
 
-비루프백 HTTP 인증, cookie session·CSRF, 접근 token 파일, 일회용 Windows client 등록 token을 담당합니다. token 값은 로그·URL·CLI에 전달하지 않습니다.
+웹 CSRF·보안 응답 헤더와 일회용 Windows client 등록 token을 담당합니다. 웹 로그인·master Bearer 인증은 사용하지 않으며 cookie session은 CSRF 값을 유지하는 용도입니다. 루프백 요청은 CSRF 검증을 우회합니다. 기존 접근 token 설정은 호환성을 위해 파싱하지만 token 파일을 생성하거나 읽지 않습니다. 웹 접근 범위는 방화벽·ACL에서 제한해야 합니다. 상세 경계는 [보안 모델](SECURITY_MODEL.md)을 참고하세요.
 
 ### `bounded_server.py`
 
