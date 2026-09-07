@@ -92,13 +92,13 @@ Release ZIP에는 다음 자료를 포함합니다.
 - `sbom.cdx.json`: hash-pinned Windows dependency의 CycloneDX SBOM
 - `SECURITY_REVIEW_KO.md`: 예상 동작과 남는 위험
 
-Release에는 ZIP, ZIP SHA-256, 독립 SBOM을 별도 asset으로 게시합니다. 이는 코드 서명을 대신하지 않습니다.
+현재 Release에는 Windows ZIP 하나만 asset으로 게시합니다. ZIP SHA-256은 릴리스 본문에 기록하고 SBOM과 내부 checksum은 ZIP에 포함합니다. 이는 코드 서명을 대신하지 않습니다.
 
 ## 명시적 한계와 운영 조치
 
 - 서버 웹 포트에 도달 가능한 사용자는 웹 UI와 웹 API를 사용할 수 있으므로 신뢰할 수 있는 내부망·VPN과 네트워크 ACL을 사용합니다.
 - 인터넷 또는 불특정 사용자 네트워크에 직접 노출하지 않습니다.
-- 신뢰 경계를 넘으면 TLS proxy를 적용합니다.
+- HTTP의 기밀성이 필요하면 TLS proxy와 HTTPS 접근 정책을 적용합니다. HTTP proxy는 별도 TCP 측정 포트를 보호하지 않으므로 TCP는 신뢰 구간이나 별도로 보호된 VPN 경로에서 사용합니다.
 - 다운로드한 TCP client ZIP과 압축 해제 설정 파일의 접근 권한을 제한합니다.
 - TCP client 등록 정보가 노출되었다고 의심되면 서버를 재시작하고 기존 ZIP을 폐기한 뒤 새 ZIP을 발급합니다.
 - 이전 버전의 `.internal-transfer-access-token` 파일은 새 버전에서 사용하지 않으므로 업그레이드 확인 후 제거할 수 있습니다.

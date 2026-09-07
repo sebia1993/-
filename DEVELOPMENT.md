@@ -14,8 +14,8 @@
 - measurement single-flight를 우회해 고부하 측정을 동시에 실행하지 않습니다.
 - transaction marker와 startup recovery를 무시하고 결과를 직접 정상 상태로 승격하지 않습니다.
 - release security artifact와 hash-pinned dependency 계약을 유지합니다.
-- 비루프백 HTTP 인증·CSRF와 TCP HMAC·replay 방지를 fail-closed로 유지합니다.
-- 접근·enrollment·agent·session token 값을 log, URL, CLI, fixture에 기록하지 않습니다.
+- 웹 무로그인 접근과 비루프백 CSRF 경계, 별도 TCP 등록·HMAC·replay 방지를 유지합니다. 웹 CSRF를 사용자 인증으로 설명하지 않습니다.
+- enrollment·agent·session token 값을 log, URL, CLI, 공개 fixture에 기록하지 않습니다. 제거된 웹 access token을 다시 생성하거나 인증에 사용하지 않습니다.
 
 ## 주요 영역
 
@@ -58,8 +58,8 @@ python tools/analyze_windows_soak_summary.py windows-soak-summary.json --minimum
 현재 source version과 동일한 release version으로 clean worktree에서 빌드합니다.
 
 ```powershell
-.\tools\build_windows_release.ps1 -Version v0.6.0
-python tools\verify_release_zip.py --zip dist\internal-upload_v0.6.0_windows.zip --version v0.6.0
+.\tools\build_windows_release.ps1 -Version v0.6.1
+python tools\verify_release_zip.py --zip dist\internal-upload_v0.6.1_windows.zip --version v0.6.1
 ```
 
 Release build가 생성한 `security_manifest.json`, SBOM, SHA256 자료를 제거하거나 verifier를 우회하지 않습니다.
