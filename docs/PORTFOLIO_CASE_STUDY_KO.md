@@ -31,7 +31,7 @@ HTTP/TCP가 서로 다른 포트·실행 경로를 쓰므로 방화벽 정책이
 저장소 루트의 Windows PowerShell에서 Python 3.11을 사용합니다. 의존성 설치에는 패키지 저장소 접근이 필요합니다. 아래 테스트는 임시 디렉터리, Flask test client와 로컬 socket을 사용하며 실제 장비 주소·계정이 필요하지 않습니다.
 
 ```powershell
-python -m venv .venv
+py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-windows.lock
 .\.venv\Scripts\python.exe -m pytest -q tests/test_access_security.py tests/test_network_measurement.py tests/test_network_probe_protocol.py tests/test_measurement_transactions.py tests/test_upload_transaction_recovery.py
 ```
