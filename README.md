@@ -12,6 +12,14 @@
 
 이 저장소는 장비를 제어하거나 회선 품질을 인증하지 않습니다. 파일 전송, 측정, 결과 보존, 재시작 복구와 배포 검증에 범위를 제한합니다.
 
+## 실제 화면으로 따라가기
+
+![운영 요약과 최근 측정 표본](docs/images/transfer-start.jpg)
+
+![공개 합성 파일의 업로드 결과와 localhost 경고](docs/images/transfer-upload.jpg)
+
+실제 v0.6.1 웹 앱을 macOS의 같은 PC에서 실행하고 브라우저로 조작한 화면입니다. 진단 파일은 공개 합성 입력이며 HTTP 요청은 `127.0.0.1` 루프백에서만 실행했습니다. 속도 수치는 물리 LAN·Wi-Fi 성능을 뜻하지 않습니다. **[화면별 행동·측정값 읽기·Excel 예시·재현 방법](docs/USAGE_SCREENSHOTS_KO.md)**에서 전체 흐름을 확인하세요.
+
 ## 채용 검토를 위한 읽기 순서
 
 1. 아래 요약에서 **HTTP/TCP 비교 관측과 운영 데이터 복구**라는 문제 범위를 확인합니다.
@@ -38,7 +46,7 @@
 4. TCP 비교가 필요하면 화면에서 일회용 등록 토큰이 든 Windows 클라이언트 ZIP을 받습니다.
 5. 결과를 화면, JSON, CSV 또는 Excel로 확인합니다.
 
-화면별 역할과 합성 시나리오는 [UI 안내](docs/UI_WALKTHROUGH_KO.md)에 정리했습니다.
+현재 화면을 따라가려면 [사용 화면 안내](docs/USAGE_SCREENSHOTS_KO.md)를 보고, HTTP/TCP 역할과 추가 합성 시나리오는 [UI 안내](docs/UI_WALKTHROUGH_KO.md)를 참고하세요.
 
 ## 아키텍처
 

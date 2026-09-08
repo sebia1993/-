@@ -1,0 +1,84 @@
+{
+  "source_sha": "0b9cd8e140f1b4fc11c84fa5c9e0ad55c12b05f5",
+  "product_version": "v0.6.1",
+  "tool": "tools/serve_docs_demo.py",
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "bind": "127.0.0.1",
+  "port": 8765,
+  "synthetic_upload": true,
+  "tcp_agent_enabled": false,
+  "device_connections": false,
+  "sample_sha256": "7b64572d93fd79ed255cfe78d4ce6a17088be21978d6aa94e4dd8d1acb3f599e",
+  "python_version": "3.12.14",
+  "capture_observation": {
+    "browser": "Codex In-app Browser",
+    "viewport": "1280x720",
+    "capture": "unaltered JPEG viewport screenshots; scroll positions differ",
+    "sourceCommit": "0b9cd8e",
+    "data": "temporary synthetic file and real loopback requests",
+    "sequence": [
+      "10MB upload/download completed",
+      "10 second download completed",
+      "synthetic file upload completed",
+      "10MB and timed download repeated for viewport capture"
+    ],
+    "start": "operations overview after 3 completed loopback samples",
+    "upload": {
+      "file": "sample-diagnostic.txt",
+      "subdir": "demo-case-001",
+      "memo": "공개 문서용 합성 업로드",
+      "completedAt": "2026-09-08 10:31:58 +0900",
+      "result": "success; localhost link warning visible"
+    },
+    "fixedSize": {
+      "MB": 10,
+      "uploadMbps": 1575.5,
+      "downloadMbps": 23967.5,
+      "status": "completed"
+    },
+    "timed": {
+      "seconds": 10,
+      "downloadMbps": 55379.4,
+      "variationPercent": 3.3,
+      "status": "completed",
+      "excelPath": "/network-check/sustained/results/9b276dde8b344f9fb024bf7de14458f9.xlsx"
+    },
+    "limits": "loopback browser runtime results do not measure physical LAN or Wi-Fi; TCP disabled"
+  },
+  "files": [
+    {
+      "file": "transfer-start.jpg",
+      "sha256": "a3211f03ed18672ff5fae1811fc504fc353bca72fa40236a7593f704370fab7f"
+    },
+    {
+      "file": "transfer-upload.jpg",
+      "sha256": "61f685eb2a1a97217cdbb29520da28b69bbf5713a5fcc8369352ffa498156452"
+    },
+    {
+      "file": "transfer-measurement.jpg",
+      "sha256": "7aba3882979a1d714ed19228c71e2474f72630ae22f934195eaca55027dde7d1"
+    },
+    {
+      "file": "transfer-result.jpg",
+      "sha256": "5f513c428e02b4fe01c6c21c2b208ee64ec36aaebfdd309b3d455ff92b708e45"
+    },
+    {
+      "file": "transfer-result.xlsx",
+      "sha256": "97c44d8ed29402104e2a4c20ead20932bb4698f09b6b93444c4d84c8f131d96b"
+    },
+    {
+      "file": "sample-diagnostic.txt",
+      "sha256": "7b64572d93fd79ed255cfe78d4ce6a17088be21978d6aa94e4dd8d1acb3f599e"
+    }
+  ],
+  "verification": {
+    "uploaded_file_readback_sha256_matches": true,
+    "xlsx_zip_integrity": true,
+    "xlsx_sheet_count": 2,
+    "xlsx_status": "success",
+    "xlsx_download_mbps": 55379.36,
+    "xlsx_variation_percent": 3.27,
+    "xlsx_one_second_samples": 10
+  },
+  "capture_image_format": "JPEG"
+}
