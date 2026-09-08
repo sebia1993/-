@@ -14,9 +14,9 @@
 
 ## 실제 화면으로 따라가기
 
-![운영 요약과 최근 측정 표본](docs/images/transfer-start.png)
+![운영 요약과 최근 측정 표본](docs/images/transfer-start.jpg)
 
-![공개 합성 파일의 업로드 결과와 localhost 경고](docs/images/transfer-upload.png)
+![공개 합성 파일의 업로드 결과와 localhost 경고](docs/images/transfer-upload.jpg)
 
 실제 v0.6.1 웹 앱을 macOS의 같은 PC에서 실행하고 브라우저로 조작한 화면입니다. 진단 파일은 공개 합성 입력이며 HTTP 요청은 `127.0.0.1` 루프백에서만 실행했습니다. 속도 수치는 물리 LAN·Wi-Fi 성능을 뜻하지 않습니다. **[화면별 행동·측정값 읽기·Excel 예시·재현 방법](docs/USAGE_SCREENSHOTS_KO.md)**에서 전체 흐름을 확인하세요.
 

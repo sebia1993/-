@@ -4,7 +4,7 @@
 
 ## 1. 첫 진입에서 운영 요약 확인
 
-![최근 완료 표본과 현재 서버 상태](images/transfer-start.png)
+![최근 완료 표본과 현재 서버 상태](images/transfer-start.jpg)
 
 - **행동:** 서버 주소를 열고 운영 요약을 본 뒤 아래 `파일 업로드` 또는 `네트워크 체크` 탭으로 이동합니다.
 - **읽을 값:** 이 화면은 재현 측정을 몇 차례 실행한 뒤의 진입 화면이며 완료 표본 3개, 현재 측정·업로드 `대기`, TCP `사용 안 함`을 보여 줍니다. 신규 서버는 표본 수가 다를 수 있습니다.
@@ -12,7 +12,7 @@
 
 ## 2. 합성 진단 파일 업로드와 다운로드 확인
 
-![업로드 완료와 다른 PC에서 사용할 수 없는 localhost 링크](images/transfer-upload.png)
+![업로드 완료와 다른 PC에서 사용할 수 없는 localhost 링크](images/transfer-upload.jpg)
 
 - **행동:** `파일 선택`으로 [sample-diagnostic.txt](images/sample-diagnostic.txt)를 고르고, 저장 하위 폴더 `demo-case-001`과 메모를 입력한 뒤 `업로드`를 누릅니다. 성공하면 파일 선택과 메모가 초기화됩니다.
 - **읽을 값:** 오른쪽 `정상 · 업로드 완료`, 원본 이름과 저장 이름, 다운로드 링크를 확인합니다. 이번 파일은 문서용 문자열만 포함하며 서버에서 다시 내려받은 SHA-256이 원본과 같았습니다.
@@ -20,7 +20,7 @@
 
 ## 3. HTTP 데이터량 기준 업로드·다운로드
 
-![10MB 전체 측정 완료와 방향별 결과](images/transfer-measurement.png)
+![10MB 전체 측정 완료와 방향별 결과](images/transfer-measurement.jpg)
 
 - **행동:** `네트워크 체크` → `HTTP 전송 측정` → `데이터량` → `10MB` → `전체 측정`을 실행합니다.
 - **읽을 값:** 진행률 100%, 업로드와 다운로드 각각의 전송량·시간·속도를 확인합니다. 예시 결과는 업로드 1575.5 Mbps, 다운로드 23967.5 Mbps입니다.
@@ -28,7 +28,7 @@
 
 ## 4. 시간 기준 결과에서 그래프와 Excel 확인
 
-![10초 다운로드의 평균·변동·1초 그래프와 Excel 링크](images/transfer-result.png)
+![10초 다운로드의 평균·변동·1초 그래프와 Excel 링크](images/transfer-result.jpg)
 
 - **행동:** `측정 시간` → `10초` → `다운로드 측정`을 실행하고 완료 후 결과 아래로 스크롤합니다. 그림은 요약·그래프·`Excel 결과 받기`가 보이는 하단 viewport입니다.
 - **읽을 값:** 평균 55379.4 Mbps, 속도 변동 3.3%, 1초 표본 10개의 변화를 함께 봅니다. 이 값 역시 루프백 결과입니다. UI의 반올림 전 Excel 값은 55379.36 Mbps와 3.27%입니다.
@@ -45,8 +45,8 @@
 - 캡처 source SHA: `0b9cd8e140f1b4fc11c84fa5c9e0ad55c12b05f5`.
 - 제품/실행 환경: v0.6.1, Python 3.12.14, macOS 26.6.2 arm64, Codex In-app Browser, 1280×720 viewport.
 - 도구: [serve_docs_demo.py](../tools/serve_docs_demo.py). 임시 config/storage/data를 만들고 LAN 주소 탐색을 루프백으로 고정하며 TCP를 비활성화합니다. 종료하면 임시 앱 데이터가 삭제됩니다.
-- 입력과 촬영: 실제 UI 버튼·파일 선택기로 공개 합성 파일을 올리고 루프백 HTTP 측정을 실행했습니다. 서버 결과를 직접 성공 상태로 주입하지 않았습니다. 원본 viewport PNG를 저장했으며 화면 재조립·목업·이미지 생성은 사용하지 않았습니다.
-- PNG·파일 SHA-256, 실행 순서, Excel 검증: [capture-manifest.json](images/capture-manifest.json). 캡처 후 문서 저장 commit이 추가됐습니다.
+- 입력과 촬영: 실제 UI 버튼·파일 선택기로 공개 합성 파일을 올리고 루프백 HTTP 측정을 실행했습니다. 서버 결과를 직접 성공 상태로 주입하지 않았습니다. 원본 viewport JPEG를 저장했으며 화면 재조립·목업·이미지 생성은 사용하지 않았습니다.
+- JPEG·파일 SHA-256, 실행 순서, Excel 검증: [capture-manifest.json](images/capture-manifest.json). 캡처 후 문서 저장 commit이 추가됐습니다.
 
 Windows PowerShell에서 저장소 루트 기준으로 재현합니다. 제품 CI와 같은 Python 3.11 및 잠금 파일을 사용합니다.
 

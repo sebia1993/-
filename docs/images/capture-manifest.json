@@ -13,7 +13,7 @@
   "capture_observation": {
     "browser": "Codex In-app Browser",
     "viewport": "1280x720",
-    "capture": "unaltered viewport screenshots; scroll positions differ",
+    "capture": "unaltered JPEG viewport screenshots; scroll positions differ",
     "sourceCommit": "0b9cd8e",
     "data": "temporary synthetic file and real loopback requests",
     "sequence": [
@@ -47,19 +47,19 @@
   },
   "files": [
     {
-      "file": "transfer-start.png",
+      "file": "transfer-start.jpg",
       "sha256": "a3211f03ed18672ff5fae1811fc504fc353bca72fa40236a7593f704370fab7f"
     },
     {
-      "file": "transfer-upload.png",
+      "file": "transfer-upload.jpg",
       "sha256": "61f685eb2a1a97217cdbb29520da28b69bbf5713a5fcc8369352ffa498156452"
     },
     {
-      "file": "transfer-measurement.png",
+      "file": "transfer-measurement.jpg",
       "sha256": "7aba3882979a1d714ed19228c71e2474f72630ae22f934195eaca55027dde7d1"
     },
     {
-      "file": "transfer-result.png",
+      "file": "transfer-result.jpg",
       "sha256": "5f513c428e02b4fe01c6c21c2b208ee64ec36aaebfdd309b3d455ff92b708e45"
     },
     {
@@ -79,5 +79,6 @@
     "xlsx_download_mbps": 55379.36,
     "xlsx_variation_percent": 3.27,
     "xlsx_one_second_samples": 10
-  }
+  },
+  "capture_image_format": "JPEG"
 }
